@@ -13,6 +13,8 @@ instance polls its mtime and mirrors whatever the others last wrote,
 rather than re-reading live pipewire params (which caused a GUI's own
 just-applied change to look "external" and get reverted a second later).
 """
+import sys
+
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -179,6 +181,9 @@ class CrossfeedWindow(Gtk.Window):
 
 
 if __name__ == "__main__":
+    if "--version" in sys.argv:
+        print(f"pipewire-crossfeed {cf.__version__}")
+        sys.exit(0)
     win = CrossfeedWindow()
     win.connect("destroy", Gtk.main_quit)
     win.show_all()

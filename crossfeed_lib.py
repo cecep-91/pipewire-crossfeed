@@ -11,6 +11,9 @@ import re
 import subprocess
 import time
 
+# Stamped with the tag version by scripts/build-binaries.sh at release time.
+__version__ = "0.0.0-dev"
+
 NODE_NAME = "crossfeed_sink"
 
 # Values baked into crossfeed.conf.

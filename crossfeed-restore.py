@@ -6,12 +6,16 @@ settings saved from the GUI survive reboots and logout/login, instead of
 reverting to crossfeed.conf's baked-in defaults every time the filter-chain
 is (re)loaded.
 """
+import os
 import sys
 import time
 
 import crossfeed_lib as cf
 
-WAIT_SECONDS = 5.0
+# On systemd, filter-chain.service has just started when we run, so 5s is
+# plenty. From an XDG autostart entry on non-systemd distros, PipeWire may
+# come up well after login — the installer sets a longer wait there.
+WAIT_SECONDS = float(os.environ.get("CROSSFEED_RESTORE_WAIT", "5"))
 POLL_INTERVAL = 0.1
 
 
@@ -42,4 +46,7 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--version" in sys.argv:
+        print(f"pipewire-crossfeed {cf.__version__}")
+        sys.exit(0)
     sys.exit(main())
