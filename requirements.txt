@@ -1,0 +1,10 @@
+# PyGObject provides the `gi` module used by crossfeed-gui.py (GTK 3 bindings).
+# On Debian/Ubuntu install it via apt instead of pip — it ships as a system
+# package tied to your GTK/GObject install:
+#   sudo apt install python3-gi gir1.2-gtk-3.0
+#
+# Only use pip if you're in a venv that needs to see the system gi module
+# (create the venv with --system-site-packages) or if you're building from
+# source with the dev headers installed:
+#   sudo apt install libgirepository1.0-dev gcc libcairo2-dev pkg-config python3-dev
+PyGObject>=3.42
