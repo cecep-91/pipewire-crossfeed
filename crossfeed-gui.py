@@ -38,7 +38,11 @@ class CrossfeedWindow(Gtk.Window):
         self.add(box)
 
         if self.node_id is None:
-            box.add(Gtk.Label(label="crossfeed_sink not found.\nIs filter-chain.service running?"))
+            box.add(Gtk.Label(
+                label="crossfeed_sink not found — the crossfeed filter isn't loaded.\n"
+                      "Restart PipeWire (on systemd: filter-chain.service),\n"
+                      "then reopen this window."
+            ))
             return
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)

@@ -15,6 +15,10 @@
 # Works from a git checkout (runs the Python scripts via python3) or from a
 # binary release tarball (bundled crossfeed-gui / crossfeed-restore ELFs).
 # Safe to re-run. `./install.sh --uninstall` removes everything it installed.
+#
+# `./install.sh --easyeffects` installs the crossfeed-easyeffects.conf
+# variant instead: crossfeed as a real selectable sink, for chaining behind
+# EasyEffects/JamesDSP (see that file's comments).
 set -eu
 
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -27,6 +31,29 @@ FILTER_CONF_DIR="$HOME/.config/pipewire/filter-chain.conf.d"
 PIPEWIRE_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Pick a python3 that actually has the GTK bindings. Plain `python3` can
+# resolve to a conda/pyenv/venv shim earlier in PATH that lacks them, even
+# when the system python3 (e.g. /usr/bin/python3 on Void) has them installed
+# via the distro package manager — so probe a few likely candidates instead
+# of trusting PATH order blindly.
+find_python3() {
+  candidates="python3"
+  for p in /usr/bin/python3 /usr/bin/python3.*; do
+    [ -x "$p" ] && candidates="$candidates $p"
+  done
+  for c in $candidates; do
+    p=$(command -v "$c" 2>/dev/null) || continue
+    if "$p" -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null; then
+      echo "$p"
+      return 0
+    fi
+  done
+  # None has the bindings — fall back to plain python3 so error messages
+  # (missing python3, missing gi) stay as before.
+  command -v python3 2>/dev/null || echo python3
+}
+PYTHON3=$(find_python3)
 
 # ---------------------------------------------------------------- detection
 
@@ -88,10 +115,16 @@ check_deps() {
       echo "  $(pkg_hint)" >&2
       exit 1
     fi
-    if ! python3 -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null; then
+    if ! "$PYTHON3" -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null; then
       echo "warning: python3 GTK bindings (gi) not found — the filter and restore"
       echo "  will work, but 'Crossfeed Control' (the GUI) won't start until you run:"
       echo "  $(pkg_hint)"
+      if [ "$PYTHON3" != "$(command -v python3)" ]; then
+        echo "  note: also checked $PYTHON3 without success."
+      fi
+    elif [ "$PYTHON3" != "$(command -v python3)" ]; then
+      echo "note: 'python3' in your PATH ($(command -v python3)) lacks GTK bindings;"
+      echo "  using $PYTHON3 instead for the installed GUI/restore commands."
     fi
   fi
   if ! have jq || ! have notify-send; then
@@ -124,19 +157,21 @@ uninstall() {
   echo "    delete that directory too if you don't want them."
 }
 
+CONF_SRC="crossfeed.conf"
 case "${1-}" in
   --uninstall|uninstall) uninstall; exit 0 ;;
+  --easyeffects) CONF_SRC="crossfeed-easyeffects.conf" ;;
   "") ;;
-  *) echo "usage: $0 [--uninstall]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--easyeffects] [--uninstall]" >&2; exit 2 ;;
 esac
 
 # ------------------------------------------------------------------ install
 
 check_deps
 
-echo "==> Installing filter-chain conf to $CONF_DIR"
+echo "==> Installing filter-chain conf ($CONF_SRC) to $CONF_DIR"
 mkdir -p "$CONF_DIR"
-cp "$SRC_DIR/crossfeed.conf" "$CONF_DIR/crossfeed.conf"
+cp "$SRC_DIR/$CONF_SRC" "$CONF_DIR/crossfeed.conf"
 
 echo "==> Installing programs to $BIN_DIR"
 mkdir -p "$BIN_DIR"
@@ -148,8 +183,8 @@ else
   cp "$SRC_DIR/crossfeed_lib.py" "$SRC_DIR/crossfeed-gui.py" \
      "$SRC_DIR/crossfeed-restore.py" "$DATA_DIR/"
   for name in gui restore; do
-    printf '#!/bin/sh\nexec python3 "%s/crossfeed-%s.py" "$@"\n' \
-      "$DATA_DIR" "$name" > "$BIN_DIR/crossfeed-$name"
+    printf '#!/bin/sh\nexec "%s" "%s/crossfeed-%s.py" "$@"\n' \
+      "$PYTHON3" "$DATA_DIR" "$name" > "$BIN_DIR/crossfeed-$name"
     chmod 755 "$BIN_DIR/crossfeed-$name"
   done
 fi
@@ -215,6 +250,14 @@ case ":$PATH:" in
 esac
 
 echo "==> Done."
-echo "Set 'Crossfeed' as your output device in your sound settings (or pavucontrol),"
-echo "then launch 'Crossfeed Control' from your app menu (or: $BIN_DIR/crossfeed-gui)."
+if [ "$CONF_SRC" = "crossfeed-easyeffects.conf" ]; then
+  echo "Set 'Crossfeed' as EasyEffects' output device (or as the system output"
+  echo "device if nothing plays through EasyEffects). Do NOT set Crossfeed as"
+  echo "the system default while EasyEffects outputs into it."
+else
+  echo "With WirePlumber >= 0.5 the filter applies to your default output"
+  echo "automatically; on older setups pick 'Crossfeed' as the output device"
+  echo "in your sound settings (or pavucontrol)."
+fi
+echo "Launch 'Crossfeed Control' from your app menu (or: $BIN_DIR/crossfeed-gui)."
 echo "Your level/frequency/on-off settings will survive reboots and logout."

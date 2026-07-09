@@ -45,7 +45,8 @@ jobs:
           PKG="pipewire-crossfeed-$VERSION-linux-${{ matrix.arch }}"
           mkdir "$PKG"
           cp dist/crossfeed-gui dist/crossfeed-restore \
-             crossfeed-ab.sh crossfeed.conf install.sh README.md "$PKG/"
+             crossfeed-ab.sh crossfeed.conf crossfeed-easyeffects.conf \
+             install.sh README.md "$PKG/"
           tar czf "$PKG.tar.gz" "$PKG"
 
       - uses: actions/upload-artifact@v4

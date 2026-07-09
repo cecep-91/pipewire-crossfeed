@@ -13,24 +13,24 @@ recordings feel less harsh on headphones. This one implements it as:
   mixed in, so only bass/mids bleed across.
 - `outL`/`outR` — mixers recombining direct + crossfed signal.
 
-It registers as a virtual sink named **Crossfeed** that you select as your output
-device; internally it plays out via PipeWire's `@DEFAULT_SINK@` target, which
-always resolves to your current default hardware output — it does not hardcode
-a device, so it follows you if you plug in headphones, switch to speakers, etc.
+With WirePlumber ≥ 0.5 it registers as a **smart filter**: WirePlumber inserts
+it automatically in front of your default output for all audio — nothing to
+select, and it follows you when you plug in headphones, switch to speakers,
+etc. On WirePlumber 0.4 it appears as a virtual sink named **Crossfeed** that
+you select as your output device instead.
 
-> **If you also use EasyEffects** (or another virtual-sink effects chain) in
-> front of Crossfeed: `@DEFAULT_SINK@` resolves to the actual default *device*,
-> not "wherever new app streams get auto-routed." Don't remove `target.object`
-> entirely and leave it target-less — on a system where EasyEffects claims new
-> streams by default, an untargeted `crossfeed_out` will link back into
-> EasyEffects' own sink, creating a feedback loop (EasyEffects → Crossfeed →
-> EasyEffects → …) that produces silence instead of an error.
+> **If you also use EasyEffects** (or another virtual-sink effects chain),
+> install with `./install.sh --easyeffects` — see
+> [EasyEffects and friends](#easyeffects-and-friends) below. Effect apps like
+> EasyEffects manage their own stream routing, which both bypasses smart-filter
+> insertion and can't target a filter-chain node directly.
 
 ## Contents
 
 | File | Purpose |
 |---|---|
-| `crossfeed.conf` | The filter-chain graph — a PipeWire `context.modules` drop-in |
+| `crossfeed.conf` | The filter-chain graph — a PipeWire `context.modules` drop-in (smart filter on WirePlumber ≥ 0.5) |
+| `crossfeed-easyeffects.conf` | Variant exposing Crossfeed as a real selectable sink, for chaining behind EasyEffects etc. |
 | `crossfeed-gui.py` | GTK control panel: on/off switch, level (dB) and crossover frequency (Hz) sliders with precise spin-button entry |
 | `crossfeed-ab.sh` | Headless one-shot bypass toggle (e.g. for a keybinding) |
 | `crossfeed-restore.py` | Reapplies your saved settings when the filter (re)starts |
@@ -91,8 +91,15 @@ Either way the installer:
 
 Then:
 
-1. Open **Settings > Sound** (or `pavucontrol`) and set **Crossfeed** as your
-   output device.
+1. Route audio through the filter:
+   - **WirePlumber ≥ 0.5** (check `wireplumber --version`): nothing to do —
+     the filter is inserted in front of your default output automatically
+     (it appears under *Filters* in `wpctl status`, not as a selectable sink).
+   - **WirePlumber 0.4**: open **Settings > Sound** (or `pavucontrol`) and set
+     **Crossfeed** as your output device.
+   - **Using EasyEffects?** Neither of the above will work — install with
+     `./install.sh --easyeffects` instead and see
+     [EasyEffects and friends](#easyeffects-and-friends).
 
 2. Launch **Crossfeed Control** from the app menu, or run `crossfeed-gui`.
    Use the switch to bypass/enable, and the two sliders (or their spin-button
@@ -100,6 +107,41 @@ Then:
 
    For a quick headless toggle instead (e.g. bound to a keyboard shortcut),
    run `crossfeed-ab`.
+
+## EasyEffects and friends
+
+EasyEffects (and similar apps like JamesDSP) claims application streams into
+its own sink and links its output directly to its configured device. That
+routing never "follows the default sink", so WirePlumber's smart-filter
+insertion can't intercept it — and EasyEffects can't target a filter-chain
+node either (WirePlumber hides those from device lists). The result: with the
+standard conf, audio silently bypasses Crossfeed.
+
+`crossfeed-easyeffects.conf` solves this by splitting Crossfeed in two: a
+plain null sink named **Crossfeed** that shows up as a normal output device,
+and a hidden filter-chain that taps its monitor and plays the processed
+signal to your real default output.
+
+```sh
+./install.sh --easyeffects
+```
+
+Then in EasyEffects, set the **output device** (top of the Output tab) to
+**Crossfeed**. The chain becomes:
+
+```
+apps → EasyEffects → Crossfeed → (crossfeed DSP) → default output
+```
+
+Two rules with this variant:
+
+- Keep your *system default* output on the real device (speakers/headphones),
+  not on Crossfeed — the DSP plays to `@DEFAULT_SINK@`, so pointing the
+  default at Crossfeed itself would loop.
+- EasyEffects only re-reads its config on restart; use its UI to switch the
+  output device, or quit it first if you edit
+  `~/.config/easyeffects/db/easyeffectsrc` by hand (it overwrites the file
+  on exit).
 
 ## Init systems
 

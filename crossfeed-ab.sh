@@ -3,6 +3,8 @@
 # Toggles between "ON" (crossfeed applied) and "OFF" (bypass, direct passthrough)
 # No restarts, no audio dropout — just flips DSP coefficients live.
 
+# The filter-chain node exposing the DSP params — both conf variants name it
+# "crossfeed_sink" (the easyeffects variant's selectable sink is "crossfeed").
 NODE_NAME="crossfeed_sink"
 STATE_DIR="$HOME/.config/pipewire-crossfeed"
 STATE_PATH="$STATE_DIR/state.json"
@@ -11,7 +13,7 @@ ID=$(pw-dump | jq -r --arg name "$NODE_NAME" \
   '.[] | select(.info.props."node.name"==$name) | .id' | head -1)
 
 if [ -z "$ID" ]; then
-  notify-send "Crossfeed" "Node '$NODE_NAME' not found — is filter-chain.service running?"
+  notify-send "Crossfeed" "Node '$NODE_NAME' not found — the crossfeed filter isn't loaded. Restart PipeWire (on systemd: filter-chain.service) and retry."
   exit 1
 fi
 
