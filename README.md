@@ -92,11 +92,15 @@ Either way the installer:
 Then:
 
 1. Route audio through the filter:
-   - **WirePlumber ≥ 0.5** (check `wireplumber --version`): nothing to do —
-     the filter is inserted in front of your default output automatically
-     (it appears under *Filters* in `wpctl status`, not as a selectable sink).
-   - **WirePlumber 0.4**: open **Settings > Sound** (or `pavucontrol`) and set
-     **Crossfeed** as your output device.
+   - **WirePlumber ≥ 0.5**: nothing to do — the filter is inserted in front
+     of your default output automatically (it appears under *Filters* in
+     `wpctl status`, not as a selectable sink).
+   - **WirePlumber 0.4**: `install.sh` detects this and enables
+     `target.object = "@DEFAULT_SINK@"` in the installed conf automatically;
+     open **Settings > Sound** (or `pavucontrol`) and set **Crossfeed** as
+     your output device. If `wireplumber` isn't on `PATH` at install time and
+     detection can't run, uncomment that line yourself in the installed
+     `crossfeed.conf` (it's commented with instructions right there).
    - **Using EasyEffects?** Neither of the above will work — install with
      `./install.sh --easyeffects` instead and see
      [EasyEffects and friends](#easyeffects-and-friends).

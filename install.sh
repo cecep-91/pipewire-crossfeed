@@ -55,6 +55,24 @@ find_python3() {
 }
 PYTHON3=$(find_python3)
 
+# WirePlumber < 0.5 has no smart-filter insertion, so crossfeed.conf's
+# playback side (which relies on smart-filter placement and omits
+# target.object) needs that target added back — see the comment in
+# crossfeed.conf. Detect it here so users don't have to hand-edit the
+# installed conf; if detection fails for any reason, leave the conf as
+# shipped (matches prior behavior) and let the README's manual fallback apply.
+WP_LEGACY=0
+if have wireplumber; then
+  wp_ver=$(wireplumber --version 2>/dev/null \
+    | sed -n 's/.*[Ll]inked with libwireplumber \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
+  wp_major=${wp_ver%% *}
+  wp_minor=${wp_ver##* }
+  if [ -n "$wp_major" ] && [ -n "$wp_minor" ] \
+     && [ "$wp_major" = 0 ] && [ "$wp_minor" -lt 5 ] 2>/dev/null; then
+    WP_LEGACY=1
+  fi
+fi
+
 # ---------------------------------------------------------------- detection
 
 # Binary release tarballs ship prebuilt crossfeed-gui / crossfeed-restore
@@ -172,6 +190,11 @@ check_deps
 echo "==> Installing filter-chain conf ($CONF_SRC) to $CONF_DIR"
 mkdir -p "$CONF_DIR"
 cp "$SRC_DIR/$CONF_SRC" "$CONF_DIR/crossfeed.conf"
+if [ "$CONF_SRC" = "crossfeed.conf" ] && [ "$WP_LEGACY" = 1 ]; then
+  echo "==> WirePlumber < 0.5 detected — enabling target.object fallback"
+  sed -i 's|^\( *\)#   target.object  = "@DEFAULT_SINK@"|\1target.object  = "@DEFAULT_SINK@"|' \
+    "$CONF_DIR/crossfeed.conf"
+fi
 
 echo "==> Installing programs to $BIN_DIR"
 mkdir -p "$BIN_DIR"
@@ -255,9 +278,15 @@ if [ "$CONF_SRC" = "crossfeed-easyeffects.conf" ]; then
   echo "device if nothing plays through EasyEffects). Do NOT set Crossfeed as"
   echo "the system default while EasyEffects outputs into it."
 else
-  echo "With WirePlumber >= 0.5 the filter applies to your default output"
-  echo "automatically; on older setups pick 'Crossfeed' as the output device"
-  echo "in your sound settings (or pavucontrol)."
+  if [ "$WP_LEGACY" = 1 ]; then
+    echo "WirePlumber < 0.5 detected: enabled the target.object fallback in"
+    echo "the installed conf. Pick 'Crossfeed' as the output device in your"
+    echo "sound settings (or pavucontrol)."
+  else
+    echo "With WirePlumber >= 0.5 the filter applies to your default output"
+    echo "automatically; on older setups pick 'Crossfeed' as the output device"
+    echo "in your sound settings (or pavucontrol)."
+  fi
 fi
 echo "Launch 'Crossfeed Control' from your app menu (or: $BIN_DIR/crossfeed-gui)."
 echo "Your level/frequency/on-off settings will survive reboots and logout."
