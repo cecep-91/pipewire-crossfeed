@@ -46,13 +46,17 @@ write_state() {
     '{enabled: $enabled, level_db: $level_db, freq_hz: $freq_hz}' > "$STATE_PATH"
 }
 
+# Same formula as crossfeed_lib.apply_state(): gain2 is the linear form of
+# LEVEL_DB, dir_gain scales the conf's default shelf cut by the same
+# fraction. Keep these two constants in sync with FULL_GAIN2/FULL_DIR_GAIN
+# in crossfeed_lib.py if those ever change.
+GAIN2=$(awk -v db="$LEVEL_DB" 'BEGIN { printf "%.6f", exp(log(10)*db/20) }')
+DIR_GAIN=$(awk -v g="$GAIN2" 'BEGIN { printf "%.6f", -1.5 * (g / 0.316) }')
+
 if [ "$IS_OFF" = "1" ]; then
-  pw-cli set-param "$ID" Props '{ params = [
-    "outL:Gain 2" 0.316
-    "outR:Gain 2" 0.316
-    "dirL:Gain" -1.5
-    "dirR:Gain" -1.5
-  ] }' >/dev/null
+  PARAMS=$(printf '{ params = [ "outL:Gain 2" %s "outR:Gain 2" %s "dirL:Gain" %s "dirR:Gain" %s ] }' \
+    "$GAIN2" "$GAIN2" "$DIR_GAIN" "$DIR_GAIN")
+  pw-cli set-param "$ID" Props "$PARAMS" >/dev/null
   write_state true
   notify-send "Crossfeed" "ON"
 else
