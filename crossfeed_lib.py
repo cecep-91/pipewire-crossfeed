@@ -41,7 +41,10 @@ PARAM_RE = re.compile(
 
 
 def get_node_id():
-    out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True).stdout
+    try:
+        out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
     for obj in json.loads(out):
         if obj.get("info", {}).get("props", {}).get("node.name") == NODE_NAME:
             return obj["id"]
