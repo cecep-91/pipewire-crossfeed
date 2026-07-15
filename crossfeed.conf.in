@@ -1,20 +1,26 @@
-# crossfeed.conf — Crossfeed as a real, selectable sink.
+# crossfeed.conf.in — template for the installed crossfeed PipeWire conf.
 #
-# This works the same way whether or not you chain another effects app
-# (EasyEffects, JamesDSP, ...) in front of it, and the same way on every
-# WirePlumber version — it doesn't rely on WirePlumber's "smart filter"
-# auto-insertion, which behaves inconsistently across versions/distros and
-# can't intercept effects apps that manage their own output link anyway.
+# The @GAIN2@ / @DIR_GAIN@ / @FREQ@ placeholders are filled in with your
+# saved level/frequency/on-off state by install.sh, the GUI and the
+# crossfeed-ab toggle on every change, and the result is written to
+# ~/.config/pipewire/pipewire.conf.d/crossfeed.conf. That way PipeWire
+# always comes back up in your last state after a restart or reboot — no
+# restore service, no init-system involvement. Don't edit the rendered file
+# by hand; it's overwritten on every settings change.
 #
-# Two nodes:
+# The main PipeWire daemon reads pipewire.conf.d/ drop-ins on every distro,
+# so this works the same whether or not filter-chain.service exists, and
+# the same on systemd and non-systemd systems.
+#
+# Topology — two nodes:
 #   - "crossfeed" (shown as "Crossfeed"): a plain null sink. Shows up as a
 #     normal output device everywhere — pick it as your system output, or as
-#     an effects app's output device if you chain one in front.
+#     an effects app's (EasyEffects, JamesDSP, ...) output device if you
+#     chain one in front.
 #   - "crossfeed_sink"/"crossfeed_out": a filter-chain that taps the null
 #     sink's monitor, applies the crossfeed graph, and plays the result to
-#     your real default device (@DEFAULT_SINK@). The filter node keeps the
-#     name "crossfeed_sink" so the GUI/toggle/restore tools (which look the
-#     DSP node up by that name) can find it.
+#     your real default device (@DEFAULT_SINK@). The GUI/toggle tools look
+#     the DSP node up by the name "crossfeed_sink".
 #
 # Chain (no effects app): apps -> Crossfeed (null sink) -> DSP -> default output.
 # Chain (with EasyEffects): apps -> EasyEffects -> Crossfeed -> DSP -> default output.
@@ -46,12 +52,12 @@ context.modules = [
         nodes = [
           { type = builtin label = copy       name = inL }
           { type = builtin label = copy       name = inR }
-          { type = builtin label = bq_lowshelf name = dirL control = { "Freq" = 700.0 "Q" = 0.7 "Gain" = -1.5 } }
-          { type = builtin label = bq_lowshelf name = dirR control = { "Freq" = 700.0 "Q" = 0.7 "Gain" = -1.5 } }
-          { type = builtin label = bq_lowpass  name = xL   control = { "Freq" = 700.0 "Q" = 0.5 } }
-          { type = builtin label = bq_lowpass  name = xR   control = { "Freq" = 700.0 "Q" = 0.5 } }
-          { type = builtin label = mixer name = outL control = { "Gain 1" = 1.0 "Gain 2" = 0.316 } }
-          { type = builtin label = mixer name = outR control = { "Gain 1" = 1.0 "Gain 2" = 0.316 } }
+          { type = builtin label = bq_lowshelf name = dirL control = { "Freq" = @FREQ@ "Q" = 0.7 "Gain" = @DIR_GAIN@ } }
+          { type = builtin label = bq_lowshelf name = dirR control = { "Freq" = @FREQ@ "Q" = 0.7 "Gain" = @DIR_GAIN@ } }
+          { type = builtin label = bq_lowpass  name = xL   control = { "Freq" = @FREQ@ "Q" = 0.5 } }
+          { type = builtin label = bq_lowpass  name = xR   control = { "Freq" = @FREQ@ "Q" = 0.5 } }
+          { type = builtin label = mixer name = outL control = { "Gain 1" = 1.0 "Gain 2" = @GAIN2@ } }
+          { type = builtin label = mixer name = outR control = { "Gain 1" = 1.0 "Gain 2" = @GAIN2@ } }
         ]
         links = [
           { output = "inL:Out" input = "dirL:In" }

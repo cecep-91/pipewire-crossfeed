@@ -44,8 +44,8 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           PKG="pipewire-crossfeed-$VERSION-linux-${{ matrix.arch }}"
           mkdir "$PKG"
-          cp dist/crossfeed-gui dist/crossfeed-restore \
-             crossfeed-ab.sh crossfeed.conf \
+          cp dist/crossfeed-gui \
+             crossfeed-ab.sh crossfeed.conf.in \
              install.sh README.md "$PKG/"
           tar czf "$PKG.tar.gz" "$PKG"
 

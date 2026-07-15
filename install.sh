@@ -1,19 +1,17 @@
 #!/bin/sh
-# install.sh — installs the crossfeed filter-chain conf, the control GUI, and
-# a restore mechanism that reapplies your last saved level/frequency/on-off
-# state whenever the filter-chain (re)starts.
+# install.sh — installs the crossfeed filter graph, control GUI and quick
+# toggle for the current user.
 #
-# Works on systemd distros (Ubuntu, Fedora, Arch, openSUSE, ...) and
-# non-systemd ones (Void/runit, Artix, Alpine, ...):
-#   - systemd: conf goes in filter-chain.conf.d/, loaded by the stock
-#     filter-chain.service; a oneshot user unit reapplies saved state on
-#     every (re)start of that service.
-#   - anything else: conf goes in pipewire.conf.d/ so the main PipeWire
-#     daemon loads the graph itself (no service manager needed); an XDG
-#     autostart entry reapplies saved state at login.
+# The filter conf always goes in ~/.config/pipewire/pipewire.conf.d/, which
+# the main PipeWire daemon reads on every distro — no init-system detection,
+# no filter-chain.service involvement. Your saved level/frequency/on-off
+# state is baked into that conf (rendered from crossfeed.conf.in) by the
+# GUI and the crossfeed-ab toggle on every change, so PipeWire always comes
+# back up in your last state after a restart or reboot — no restore service
+# or autostart entry needed either.
 #
-# Works from a git checkout (runs the Python scripts via python3) or from a
-# binary release tarball (bundled crossfeed-gui / crossfeed-restore ELFs).
+# Works from a git checkout (runs the Python GUI via python3) or from a
+# binary release tarball (bundled crossfeed-gui ELF).
 # Safe to re-run. `./install.sh --uninstall` removes everything it installed.
 set -eu
 
@@ -21,10 +19,14 @@ SRC_DIR=$(cd "$(dirname "$0")" && pwd)
 DATA_DIR="$HOME/.local/share/pipewire-crossfeed"
 BIN_DIR="$HOME/.local/bin"
 APPS_DIR="$HOME/.local/share/applications"
-AUTOSTART_DIR="$HOME/.config/autostart"
-SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
-FILTER_CONF_DIR="$HOME/.config/pipewire/filter-chain.conf.d"
-PIPEWIRE_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
+CONF_PATH="$HOME/.config/pipewire/pipewire.conf.d/crossfeed.conf"
+STATE_PATH="$HOME/.config/pipewire-crossfeed/state.json"
+
+# Artifacts of older versions of this installer, removed on install and
+# uninstall so upgrades don't leave a second copy of the filter behind.
+LEGACY_FILTER_CONF="$HOME/.config/pipewire/filter-chain.conf.d/crossfeed.conf"
+LEGACY_AUTOSTART="$HOME/.config/autostart/crossfeed-restore.desktop"
+LEGACY_UNIT="$HOME/.config/systemd/user/crossfeed-restore.service"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -53,29 +55,11 @@ PYTHON3=$(find_python3)
 
 # ---------------------------------------------------------------- detection
 
-# Binary release tarballs ship prebuilt crossfeed-gui / crossfeed-restore
-# next to this script; a git checkout has the .py sources instead.
+# Binary release tarballs ship a prebuilt crossfeed-gui next to this script;
+# a git checkout has the .py sources instead.
 BINARY_MODE=0
-if [ -f "$SRC_DIR/crossfeed-gui" ] && [ -f "$SRC_DIR/crossfeed-restore" ]; then
+if [ -f "$SRC_DIR/crossfeed-gui" ]; then
   BINARY_MODE=1
-fi
-
-# INIT=systemd only if systemd is PID 1 *and* PipeWire is systemd-managed
-# for this user; SERVICE is the unit the restore hook should follow.
-INIT="other"
-SERVICE=""
-CONF_DIR="$PIPEWIRE_CONF_DIR"
-if [ -d /run/systemd/system ] && have systemctl; then
-  units=$(systemctl --user list-unit-files 2>/dev/null || true)
-  if printf '%s\n' "$units" | grep -q '^filter-chain\.service'; then
-    INIT="systemd"
-    SERVICE="filter-chain.service"
-    CONF_DIR="$FILTER_CONF_DIR"
-  elif printf '%s\n' "$units" | grep -q '^pipewire\.service'; then
-    # No separate filter-chain unit — let the main daemon load the graph.
-    INIT="systemd"
-    SERVICE="pipewire.service"
-  fi
 fi
 
 pkg_hint() {
@@ -107,20 +91,21 @@ check_deps() {
   fi
   if [ "$BINARY_MODE" = 0 ]; then
     if ! have python3; then
-      echo "error: python3 not found (needed to run the GUI and restore scripts)." >&2
+      echo "error: python3 not found (needed to run the GUI)." >&2
       echo "  $(pkg_hint)" >&2
       exit 1
     fi
     if ! "$PYTHON3" -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null; then
-      echo "warning: python3 GTK bindings (gi) not found — the filter and restore"
-      echo "  will work, but 'Crossfeed Control' (the GUI) won't start until you run:"
+      echo "warning: python3 GTK bindings (gi) not found — the filter and the"
+      echo "  crossfeed-ab toggle will work, but 'Crossfeed Control' (the GUI)"
+      echo "  won't start until you run:"
       echo "  $(pkg_hint)"
       if [ "$PYTHON3" != "$(command -v python3)" ]; then
         echo "  note: also checked $PYTHON3 without success."
       fi
     elif [ "$PYTHON3" != "$(command -v python3)" ]; then
       echo "note: 'python3' in your PATH ($(command -v python3)) lacks GTK bindings;"
-      echo "  using $PYTHON3 instead for the installed GUI/restore commands."
+      echo "  using $PYTHON3 instead for the installed GUI command."
     fi
   fi
   if ! have jq || ! have notify-send; then
@@ -129,26 +114,68 @@ check_deps() {
   fi
 }
 
+render_conf() {
+  # Render crossfeed.conf.in with the saved state (or the defaults, on a
+  # first install). Keep the placeholder handling in sync with
+  # crossfeed_lib.render_conf() and crossfeed-ab.sh.
+  LEVEL_DB=-10.0
+  FREQ_HZ=700.0
+  ENABLED=true
+  if [ -f "$STATE_PATH" ] && have jq; then
+    v=$(jq -r '.level_db // empty' "$STATE_PATH" 2>/dev/null) || v=""
+    case $v in ''|*[!0-9.+-]*) ;; *) LEVEL_DB=$v ;; esac
+    v=$(jq -r '.freq_hz // empty' "$STATE_PATH" 2>/dev/null) || v=""
+    case $v in ''|*[!0-9.+-]*) ;; *) FREQ_HZ=$v ;; esac
+    v=$(jq -r '.enabled' "$STATE_PATH" 2>/dev/null) || v=""
+    [ "$v" = "false" ] && ENABLED=false
+  fi
+  if [ "$ENABLED" = true ]; then
+    GAIN2=$(awk -v db="$LEVEL_DB" 'BEGIN { printf "%.6f", exp(log(10)*db/20) }')
+    DIR_GAIN=$(awk -v g="$GAIN2" 'BEGIN { printf "%.6f", -1.5 * (g / 0.316) }')
+  else
+    GAIN2=0.0
+    DIR_GAIN=0.0
+  fi
+  mkdir -p "$(dirname "$CONF_PATH")"
+  awk -v g2="$GAIN2" -v dg="$DIR_GAIN" -v f="$FREQ_HZ" \
+    '{ gsub(/@GAIN2@/, g2); gsub(/@DIR_GAIN@/, dg); gsub(/@FREQ@/, f); print }' \
+    "$SRC_DIR/crossfeed.conf.in" > "$CONF_PATH.tmp" && mv "$CONF_PATH.tmp" "$CONF_PATH"
+}
+
+remove_legacy() {
+  rm -f "$LEGACY_FILTER_CONF" "$LEGACY_AUTOSTART" "$BIN_DIR/crossfeed-restore"
+  if [ -f "$LEGACY_UNIT" ]; then
+    have systemctl && systemctl --user disable crossfeed-restore.service 2>/dev/null || true
+    rm -f "$LEGACY_UNIT"
+    have systemctl && systemctl --user daemon-reload 2>/dev/null || true
+  fi
+}
+
+restart_pipewire() {
+  # Best-effort: on systemd-managed PipeWire we can restart it ourselves;
+  # anywhere else, tell the user (a relogin always works).
+  if [ -d /run/systemd/system ] && have systemctl \
+     && systemctl --user list-unit-files 2>/dev/null | grep -q '^pipewire\.service'; then
+    echo "==> Restarting PipeWire"
+    systemctl --user restart pipewire.service pipewire-pulse.service 2>/dev/null \
+      || systemctl --user restart pipewire.service 2>/dev/null \
+      || echo "    (restart failed — log out and back in instead)"
+  else
+    echo "==> Restart PipeWire yourself to apply (restart it from your session/"
+    echo "    service manager, or just log out and back in)."
+  fi
+}
+
 # ---------------------------------------------------------------- uninstall
 
 uninstall() {
   echo "==> Removing installed files"
-  rm -f "$FILTER_CONF_DIR/crossfeed.conf" "$PIPEWIRE_CONF_DIR/crossfeed.conf"
-  rm -f "$BIN_DIR/crossfeed-gui" "$BIN_DIR/crossfeed-restore" "$BIN_DIR/crossfeed-ab"
+  rm -f "$CONF_PATH"
+  rm -f "$BIN_DIR/crossfeed-gui" "$BIN_DIR/crossfeed-ab"
   rm -rf "$DATA_DIR"
   rm -f "$APPS_DIR/crossfeed-control.desktop"
-  rm -f "$AUTOSTART_DIR/crossfeed-restore.desktop"
-  if [ -f "$SYSTEMD_USER_DIR/crossfeed-restore.service" ]; then
-    systemctl --user disable crossfeed-restore.service 2>/dev/null || true
-    rm -f "$SYSTEMD_USER_DIR/crossfeed-restore.service"
-    systemctl --user daemon-reload 2>/dev/null || true
-  fi
-  if [ "$INIT" = systemd ] && [ -n "$SERVICE" ]; then
-    echo "==> Restarting $SERVICE to unload the filter"
-    systemctl --user restart "$SERVICE" || true
-  else
-    echo "==> Restart PipeWire (or log out and back in) to unload the filter."
-  fi
+  remove_legacy
+  restart_pipewire
   echo "==> Done. Saved settings in ~/.config/pipewire-crossfeed/ were kept;"
   echo "    delete that directory too if you don't want them."
 }
@@ -163,24 +190,22 @@ esac
 
 check_deps
 
-echo "==> Installing filter-chain conf (crossfeed.conf) to $CONF_DIR"
-mkdir -p "$CONF_DIR"
-cp "$SRC_DIR/crossfeed.conf" "$CONF_DIR/crossfeed.conf"
+echo "==> Installing filter conf to $CONF_PATH"
+render_conf
+remove_legacy
 
 echo "==> Installing programs to $BIN_DIR"
-mkdir -p "$BIN_DIR"
+mkdir -p "$BIN_DIR" "$DATA_DIR"
+# The conf template lives in DATA_DIR so the GUI and crossfeed-ab can
+# re-render the installed conf whenever the settings change.
+cp "$SRC_DIR/crossfeed.conf.in" "$DATA_DIR/"
 if [ "$BINARY_MODE" = 1 ]; then
   install -m 755 "$SRC_DIR/crossfeed-gui" "$BIN_DIR/crossfeed-gui"
-  install -m 755 "$SRC_DIR/crossfeed-restore" "$BIN_DIR/crossfeed-restore"
 else
-  mkdir -p "$DATA_DIR"
-  cp "$SRC_DIR/crossfeed_lib.py" "$SRC_DIR/crossfeed-gui.py" \
-     "$SRC_DIR/crossfeed-restore.py" "$DATA_DIR/"
-  for name in gui restore; do
-    printf '#!/bin/sh\nexec "%s" "%s/crossfeed-%s.py" "$@"\n' \
-      "$PYTHON3" "$DATA_DIR" "$name" > "$BIN_DIR/crossfeed-$name"
-    chmod 755 "$BIN_DIR/crossfeed-$name"
-  done
+  cp "$SRC_DIR/crossfeed_lib.py" "$SRC_DIR/crossfeed-gui.py" "$DATA_DIR/"
+  printf '#!/bin/sh\nexec "%s" "%s/crossfeed-gui.py" "$@"\n' \
+    "$PYTHON3" "$DATA_DIR" > "$BIN_DIR/crossfeed-gui"
+  chmod 755 "$BIN_DIR/crossfeed-gui"
 fi
 install -m 755 "$SRC_DIR/crossfeed-ab.sh" "$BIN_DIR/crossfeed-ab"
 
@@ -199,49 +224,13 @@ StartupNotify=true
 EOF
 update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
 
-if [ "$INIT" = systemd ]; then
-  echo "==> Installing crossfeed-restore.service (follows $SERVICE)"
-  mkdir -p "$SYSTEMD_USER_DIR"
-  cat > "$SYSTEMD_USER_DIR/crossfeed-restore.service" <<EOF
-[Unit]
-Description=Restore last saved Crossfeed level/frequency/on-off state
-After=$SERVICE
-PartOf=$SERVICE
-
-[Service]
-Type=oneshot
-ExecStart=$BIN_DIR/crossfeed-restore
-
-[Install]
-WantedBy=$SERVICE
-EOF
-  systemctl --user daemon-reload
-  systemctl --user enable crossfeed-restore.service
-  echo "==> Restarting $SERVICE (also triggers crossfeed-restore.service)"
-  systemctl --user restart "$SERVICE"
-else
-  echo "==> Installing login autostart entry to $AUTOSTART_DIR"
-  mkdir -p "$AUTOSTART_DIR"
-  cat > "$AUTOSTART_DIR/crossfeed-restore.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Crossfeed Restore
-Comment=Reapply saved crossfeed settings after login
-Exec=env CROSSFEED_RESTORE_WAIT=30 $BIN_DIR/crossfeed-restore
-Terminal=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-EOF
-  echo "==> No systemd-managed PipeWire detected: restart PipeWire yourself to"
-  echo "    load the filter (restart it from your session/service manager, or"
-  echo "    just log out and back in), then run: $BIN_DIR/crossfeed-restore"
-fi
-
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "note: $BIN_DIR is not in your PATH — add it to use the" \
-         "crossfeed-gui / crossfeed-ab / crossfeed-restore commands by name." ;;
+         "crossfeed-gui / crossfeed-ab commands by name." ;;
 esac
+
+restart_pipewire
 
 echo "==> Done."
 echo "Pick 'Crossfeed' as your output device in Settings > Sound (or"
@@ -250,4 +239,5 @@ echo "output device if you chain one in front. Do NOT set Crossfeed as your"
 echo "system default output — leave that on your real device, or the DSP's"
 echo "playback (which targets the default) will loop back into itself."
 echo "Launch 'Crossfeed Control' from your app menu (or: $BIN_DIR/crossfeed-gui)."
-echo "Your level/frequency/on-off settings will survive reboots and logout."
+echo "Your settings are baked into the installed conf on every change, so"
+echo "they survive PipeWire restarts and reboots automatically."

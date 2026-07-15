@@ -1,7 +1,7 @@
 #!/bin/sh
-# build-binaries.sh — builds self-contained crossfeed-gui / crossfeed-restore
-# binaries with PyInstaller. Used by the CI and release workflows; runnable
-# locally too if you have python3-gi, GTK 3 and pyinstaller installed.
+# build-binaries.sh — builds a self-contained crossfeed-gui binary with
+# PyInstaller. Used by the CI and release workflows; runnable locally too
+# if you have python3-gi, GTK 3 and pyinstaller installed.
 #
 #   usage: scripts/build-binaries.sh [version]
 #
@@ -19,9 +19,7 @@ cd "$(dirname "$0")/.."
 sed -i "s/^__version__ = .*/__version__ = \"$VERSION\"/" crossfeed_lib.py
 
 pyinstaller --onefile --noconfirm --clean --name crossfeed-gui crossfeed-gui.py
-pyinstaller --onefile --noconfirm --clean --name crossfeed-restore crossfeed-restore.py
 
-# Smoke test: --version exercises the bundled interpreter, and for the GUI
-# also the bundled gi/GTK stack (importing Gtk needs no display).
+# Smoke test: --version exercises the bundled interpreter and the bundled
+# gi/GTK stack (importing Gtk needs no display).
 ./dist/crossfeed-gui --version
-./dist/crossfeed-restore --version

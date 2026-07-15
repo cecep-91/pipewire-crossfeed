@@ -27,10 +27,9 @@ sink avoids both problems.
 
 | File | Purpose |
 |---|---|
-| `crossfeed.conf` | The null-sink + filter-chain graph — a PipeWire `context.objects`/`context.modules` drop-in |
+| `crossfeed.conf.in` | Template for the null-sink + filter-chain graph — rendered with your saved settings into a PipeWire `pipewire.conf.d/` drop-in |
 | `crossfeed-gui.py` | GTK control panel: on/off switch, level (dB) and crossover frequency (Hz) sliders with precise spin-button entry |
 | `crossfeed-ab.sh` | Headless one-shot bypass toggle (e.g. for a keybinding) |
-| `crossfeed-restore.py` | Reapplies your saved settings when the filter (re)starts |
 | `install.sh` | Installs everything for the current user (`--uninstall` to remove) |
 
 ## Requirements
@@ -79,12 +78,15 @@ Clone this repo (or download a source tarball) and run:
 
 Either way the installer:
 
-- installs `crossfeed.conf` where your system will load it (see
-  [Init systems](#init-systems) below),
-- puts `crossfeed-gui`, `crossfeed-ab` and `crossfeed-restore` commands in
-  `~/.local/bin/`,
+- renders `crossfeed.conf.in` (with your saved settings, or the defaults)
+  into `~/.config/pipewire/pipewire.conf.d/crossfeed.conf` — read by the
+  main PipeWire daemon on every distro, no init system or
+  `filter-chain.service` involved (see
+  [How settings persist](#how-settings-persist)),
+- puts `crossfeed-gui` and `crossfeed-ab` commands in `~/.local/bin/`,
 - adds a **Crossfeed Control** launcher to your app menu,
-- sets up state restore so your settings survive reboots.
+- restarts PipeWire if it's systemd-managed; otherwise it tells you to
+  restart it (or just log out and back in).
 
 Then:
 
@@ -133,22 +135,24 @@ Two rules:
   `~/.config/easyeffects/db/easyeffectsrc` by hand (it overwrites the file
   on exit).
 
-## Init systems
+## How settings persist
 
-**systemd** (Ubuntu, Fedora, Arch, openSUSE, ...): the conf goes in
-`~/.config/pipewire/filter-chain.conf.d/`, loaded by the stock
-`filter-chain.service` user unit, and a `crossfeed-restore.service` oneshot
-reapplies your saved settings every time that service (re)starts.
+There is no restore service, autostart entry, or init-system dependence.
+Every time you change a setting (GUI or `crossfeed-ab`), two things happen:
 
-**Everything else** (Void/runit, Artix, Alpine, or any setup where PipeWire
-isn't systemd-managed): the conf goes in `~/.config/pipewire/pipewire.conf.d/`
-instead, so the main PipeWire daemon loads the filter graph itself — no
-service manager involved. Saved settings are reapplied at login via an XDG
-autostart entry (`~/.config/autostart/crossfeed-restore.desktop`). If your
-window manager doesn't run XDG autostart entries, add `crossfeed-restore` to
-its startup script; if you restart PipeWire mid-session, run it again by hand.
-After the first install, restart PipeWire (or log out and back in) to load
-the filter.
+1. It's applied to the running filter live (`pw-cli set-param` — no restart,
+   no audio dropout).
+2. It's baked into `~/.config/pipewire/pipewire.conf.d/crossfeed.conf`
+   (re-rendered from the `crossfeed.conf.in` template), so the next time
+   PipeWire starts — reboot, relogin, or manual restart — the filter comes
+   up already in your last state.
+
+The main PipeWire daemon reads `pipewire.conf.d/` drop-ins on every distro,
+systemd or not, so the same install works on Ubuntu, Fedora, Arch, Void,
+Alpine, etc. Don't edit the rendered conf by hand — it's overwritten on the
+next settings change; the template in
+`~/.local/share/pipewire-crossfeed/crossfeed.conf.in` is the place for
+structural tweaks.
 
 ## Uninstall
 

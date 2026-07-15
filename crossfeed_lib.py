@@ -1,15 +1,19 @@
 """Shared pipewire plumbing and persisted-state handling for pipewire-crossfeed.
 
-Used by crossfeed-gui.py (interactive) and crossfeed-restore.py (headless,
-run by systemd right after filter-chain.service starts) so both agree on
-how settings are read/applied/saved.
+Used by crossfeed-gui.py; crossfeed-ab.sh mirrors the same math and file
+formats in POSIX sh (see the "keep in sync" comments in both).
+
+State model: every change is applied to the live filter-chain node with
+pw-cli AND baked into the installed PipeWire conf (rendered from
+crossfeed.conf.in), so PipeWire always comes back up in the last saved
+state after a restart/reboot — no restore service, no init-system
+involvement. state.json is the coordination point between concurrently
+running tools (GUI instances, crossfeed-ab).
 """
 import json
 import math
 import os
-import re
 import subprocess
-import time
 
 # Stamped with the tag version by scripts/build-binaries.sh at release time.
 __version__ = "0.0.0-dev"
@@ -19,14 +23,14 @@ __version__ = "0.0.0-dev"
 # node behind it.
 NODE_NAME = "crossfeed_sink"
 
-# Values baked into crossfeed.conf.
-FULL_GAIN2 = 0.316       # outL/outR "Gain 2" at the conf's default level (~-10 dB)
+# Values the conf template renders at the default level.
+FULL_GAIN2 = 0.316       # outL/outR "Gain 2" at the default level (~-10 dB)
 FULL_DIR_GAIN = -1.5     # dirL/dirR "Gain" at that same default level
-FULL_FREQ = 700.0        # dirL/dirR/xL/xR "Freq" in the conf
+FULL_FREQ = 700.0        # dirL/dirR/xL/xR "Freq" default
 
 LEVEL_MIN_DB = -30.0     # subtle, barely-there crossfeed
 LEVEL_MAX_DB = -6.0      # strong crossfeed
-LEVEL_DEFAULT_DB = 20 * math.log10(FULL_GAIN2)  # ~ -10.0 dB, the conf's own default
+LEVEL_DEFAULT_DB = 20 * math.log10(FULL_GAIN2)  # ~ -10.0 dB
 
 FREQ_MIN = 200.0
 FREQ_MAX = 2000.0
@@ -34,10 +38,9 @@ FREQ_MAX = 2000.0
 OFF_THRESHOLD_LINEAR = 0.01  # below this, treat outL:Gain 2 as "bypassed"
 
 STATE_PATH = os.path.expanduser("~/.config/pipewire-crossfeed/state.json")
-
-PARAM_RE = re.compile(
-    r'"(outL:Gain 2|dirL:Freq)"\s*\n\s*Float ([\-0-9.]+)'
-)
+CONF_PATH = os.path.expanduser("~/.config/pipewire/pipewire.conf.d/crossfeed.conf")
+DATA_DIR = os.path.expanduser("~/.local/share/pipewire-crossfeed")
+TEMPLATE_NAME = "crossfeed.conf.in"
 
 
 def get_node_id():
@@ -61,37 +64,44 @@ def linear_to_db(linear):
     return 20 * math.log10(linear) if linear > 0 else LEVEL_MIN_DB
 
 
+def compute_gains(enabled, level_db):
+    """(gain2, dir_gain) for a state: the linear crossfeed mix gain, and the
+    direct path's low-shelf cut scaled by the same fraction of full level.
+    Keep in sync with the awk math in crossfeed-ab.sh."""
+    if not enabled:
+        return 0.0, 0.0
+    linear = db_to_linear(level_db)
+    return linear, FULL_DIR_GAIN * (linear / FULL_GAIN2)
+
+
 def read_state(node_id):
+    """Current (gain2, freq) of the live node, from pw-dump's JSON.
+
+    Falls back to the conf defaults if the node/daemon is unreachable —
+    callers treat the result as display state, not ground truth.
+    """
     try:
         out = subprocess.run(
-            ["pw-cli", "enum-params", str(node_id), "Props"],
-            capture_output=True, text=True,
+            ["pw-dump", str(node_id)], capture_output=True, text=True, check=True,
         ).stdout
-    except FileNotFoundError:
-        out = ""
-    vals = dict(PARAM_RE.findall(out))
-    gain2 = float(vals.get("outL:Gain 2", FULL_GAIN2))
-    freq = float(vals.get("dirL:Freq", FULL_FREQ))
+        objs = json.loads(out)
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
+        return FULL_GAIN2, FULL_FREQ
+    gain2, freq = FULL_GAIN2, FULL_FREQ
+    for obj in objs:
+        for prop in obj.get("info", {}).get("params", {}).get("Props") or []:
+            params = prop.get("params")
+            if not isinstance(params, list):
+                continue
+            pairs = dict(zip(params[::2], params[1::2]))
+            try:
+                if "outL:Gain 2" in pairs:
+                    gain2 = float(pairs["outL:Gain 2"])
+                if "dirL:Freq" in pairs:
+                    freq = float(pairs["dirL:Freq"])
+            except (TypeError, ValueError):
+                continue
     return gain2, freq
-
-
-def wait_for_conf_init(node_id, timeout=5.0, poll_interval=0.1):
-    """Block until the filter-chain module has seeded its own conf defaults.
-
-    The node can appear in pw-dump before the module finishes setting its
-    initial Freq/Q/Gain/biquad-coefficient values. Applying an override
-    before that finishes only ever touches Freq/Gain (not Q or the b/a
-    coefficients), permanently zeroing those out. crossfeed.conf's Freq is
-    never legitimately 0, so use it as the "finished initializing" signal.
-    Returns True once seen, False on timeout.
-    """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        _, freq = read_state(node_id)
-        if freq > 0:
-            return True
-        time.sleep(poll_interval)
-    return False
 
 
 def apply_state(node_id, enabled, level_db, freq_hz):
@@ -101,14 +111,7 @@ def apply_state(node_id, enabled, level_db, freq_hz):
     stale node id after a PipeWire restart, ...) so callers can re-resolve
     the node id and retry instead of failing silently.
     """
-    linear = db_to_linear(level_db)
-    fraction = linear / FULL_GAIN2
-    if enabled:
-        gain2 = linear
-        dir_gain = FULL_DIR_GAIN * fraction
-    else:
-        gain2 = 0.0
-        dir_gain = 0.0
+    gain2, dir_gain = compute_gains(enabled, level_db)
     params = (
         '{ params = [ '
         f'"outL:Gain 2" {gain2:.6f} '
@@ -131,12 +134,52 @@ def apply_state(node_id, enabled, level_db, freq_hz):
     return proc.returncode == 0
 
 
-def save_persisted_state(enabled, level_db, freq_hz):
+def _template_path():
+    for cand in (
+        os.path.join(DATA_DIR, TEMPLATE_NAME),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), TEMPLATE_NAME),
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def render_conf(enabled, level_db, freq_hz):
+    """Bake a state into the installed PipeWire conf (atomically), so the
+    filter comes up in exactly this state on the next PipeWire start.
+    Replaces the old restore-at-boot mechanism. Returns False if the conf
+    template can't be found (state.json is still authoritative then).
+    Keep the placeholder names in sync with crossfeed.conf.in and the awk
+    render in crossfeed-ab.sh / install.sh."""
+    template = _template_path()
+    if template is None:
+        return False
+    gain2, dir_gain = compute_gains(enabled, level_db)
+    with open(template) as f:
+        text = f.read()
+    text = (
+        text.replace("@GAIN2@", f"{gain2:.6f}")
+            .replace("@DIR_GAIN@", f"{dir_gain:.6f}")
+            .replace("@FREQ@", f"{freq_hz:.1f}")
+    )
+    os.makedirs(os.path.dirname(CONF_PATH), exist_ok=True)
+    tmp_path = CONF_PATH + ".tmp"
+    with open(tmp_path, "w") as f:
+        f.write(text)
+    os.replace(tmp_path, CONF_PATH)
+    return True
+
+
+def persist_state(enabled, level_db, freq_hz):
+    """Record a state everywhere it needs to outlive this process: the
+    state file (tool coordination + UI restore) and the installed conf
+    (PipeWire restart/reboot)."""
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
     tmp_path = STATE_PATH + ".tmp"
     with open(tmp_path, "w") as f:
         json.dump({"enabled": enabled, "level_db": level_db, "freq_hz": freq_hz}, f)
     os.replace(tmp_path, STATE_PATH)
+    render_conf(enabled, level_db, freq_hz)
 
 
 def load_persisted_state():

@@ -4,8 +4,8 @@
 Same live-tweak trick as crossfeed-ab.sh (pw-cli set-param on a running
 filter-chain node, no restart/dropout) but exposed as a switch plus
 level (dB) and crossover frequency (Hz) sliders. Every change is saved to
-crossfeed_lib.STATE_PATH and reapplied on the next filter-chain start by
-crossfeed-restore.py, so settings survive reboots/logout.
+crossfeed_lib.STATE_PATH and baked into the installed PipeWire conf, so
+PipeWire itself comes back up in the saved state after restarts/reboots.
 
 If you open more than one instance of this GUI (or run crossfeed-ab.sh
 while a GUI is open), they coordinate through that same state file: each
@@ -77,7 +77,7 @@ class CrossfeedWindow(Gtk.Window):
             "audio-volume-muted-symbolic", Gtk.IconSize.DIALOG)
         msg = Gtk.Label(
             label="The crossfeed filter isn't loaded.\n"
-                  "Restart PipeWire (on systemd: filter-chain.service),\n"
+                  "Restart PipeWire (or log out and back in),\n"
                   "then try again."
         )
         msg.set_justify(Gtk.Justification.CENTER)
@@ -156,7 +156,6 @@ class CrossfeedWindow(Gtk.Window):
 
         self._set_page(self.sliders_box)
 
-        self.restore_persisted_if_needed()
         persisted = cf.load_persisted_state()
         if persisted is not None:
             # Initialize from the saved state, not the live params: while
@@ -181,22 +180,6 @@ class CrossfeedWindow(Gtk.Window):
 
     # ------------------------------------------------------------- state
 
-    def restore_persisted_if_needed(self):
-        # Belt-and-suspenders: normally crossfeed-restore.service already
-        # reapplied the saved settings when filter-chain.service started. If
-        # that unit isn't installed/enabled, or the GUI won races it, apply
-        # the saved settings ourselves so they aren't silently ignored.
-        persisted = cf.load_persisted_state()
-        if persisted is None:
-            return
-        if not cf.wait_for_conf_init(self.node_id, timeout=5.0):
-            return
-        enabled, level_db, freq_hz = persisted
-        gain2, freq = cf.read_state(self.node_id)
-        cur_gain2 = cf.db_to_linear(level_db) if enabled else 0.0
-        if abs(gain2 - cur_gain2) > 0.01 or abs(freq - freq_hz) > 1.0:
-            cf.apply_state(self.node_id, enabled, level_db, freq_hz)
-
     def _show_state(self, enabled, level_db, freq_hz):
         """Reflect a state in the widgets without re-applying it."""
         level_db = _clamp(level_db, cf.LEVEL_MIN_DB, cf.LEVEL_MAX_DB)
@@ -220,7 +203,7 @@ class CrossfeedWindow(Gtk.Window):
             if node_id is not None and node_id != self.node_id:
                 self.node_id = node_id
                 cf.apply_state(self.node_id, enabled, level_db, freq_hz)
-        cf.save_persisted_state(enabled, level_db, freq_hz)
+        cf.persist_state(enabled, level_db, freq_hz)
         # We just wrote the state file ourselves — remember its mtime so
         # poll_state_file doesn't mistake our own change for an external one.
         self._state_mtime = cf.state_mtime()
