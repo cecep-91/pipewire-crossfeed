@@ -22,7 +22,7 @@ fi
 CUR=$(pw-cli enum-params "$ID" Props 2>/dev/null \
   | grep -A1 '"outL:Gain 2"' \
   | grep -o 'Float [0-9.]*' \
-  | awk '{print $2}')
+  | awk '{print $2}' | head -1)
 
 if [ -z "$CUR" ]; then
   notify-send "Crossfeed" "Could not read current gain — check port/control names with: pw-cli enum-params $ID Props"
@@ -35,16 +35,24 @@ IS_OFF=$(awk -v c="$CUR" 'BEGIN { print (c < 0.05) ? 1 : 0 }')
 # Preserve whatever level/freq the GUI last set — this toggle only flips
 # on/off, it doesn't touch the dB/Hz values.
 mkdir -p "$STATE_DIR"
+LEVEL_DB=""
+FREQ_HZ=""
 if [ -f "$STATE_PATH" ]; then
   LEVEL_DB=$(jq -r '.level_db // empty' "$STATE_PATH" 2>/dev/null)
   FREQ_HZ=$(jq -r '.freq_hz // empty' "$STATE_PATH" 2>/dev/null)
 fi
-[ -n "$LEVEL_DB" ] || LEVEL_DB=-10.0
-[ -n "$FREQ_HZ" ] || FREQ_HZ=700.0
+# Fall back to the conf defaults on anything non-numeric — a corrupted state
+# file must not leak garbage into the awk math below (awk reads non-numeric
+# strings as 0, and 0 dB is full-blast crossfeed).
+case $LEVEL_DB in ''|*[!0-9.+-]*) LEVEL_DB=-10.0 ;; esac
+case $FREQ_HZ  in ''|*[!0-9.+-]*) FREQ_HZ=700.0  ;; esac
 
 write_state() {
+  # Write via tmp + rename so a GUI instance polling the state file can
+  # never read a half-written one.
   jq -n --argjson enabled "$1" --argjson level_db "$LEVEL_DB" --argjson freq_hz "$FREQ_HZ" \
-    '{enabled: $enabled, level_db: $level_db, freq_hz: $freq_hz}' > "$STATE_PATH"
+    '{enabled: $enabled, level_db: $level_db, freq_hz: $freq_hz}' > "$STATE_PATH.tmp" \
+    && mv "$STATE_PATH.tmp" "$STATE_PATH"
 }
 
 # Same formula as crossfeed_lib.apply_state(): gain2 is the linear form of

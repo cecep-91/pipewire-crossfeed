@@ -23,73 +23,163 @@ from gi.repository import GLib, Gtk
 import crossfeed_lib as cf
 
 
+def _clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+
 class CrossfeedWindow(Gtk.Window):
     def __init__(self):
         super().__init__(title="Crossfeed")
-        self.set_border_width(16)
-        self.set_default_size(340, -1)
         self.set_resizable(False)
+        self.set_default_size(380, -1)
+        self.set_icon_name("audio-volume-high")
 
-        self.node_id = cf.get_node_id()
+        self.header = Gtk.HeaderBar(show_close_button=True, title="Crossfeed")
+        self.set_titlebar(self.header)
+
+        # The switch lives in the header bar on both pages, but is only
+        # shown once the filter node is actually reachable.
+        self.switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.switch.set_no_show_all(True)
+        self.switch.connect("state-set", self.on_switch)
+        self.header.pack_end(self.switch)
+
         self._suppress = False
         self._state_mtime = None
+        self._polling = False
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.add(box)
-
+        self.node_id = cf.get_node_id()
         if self.node_id is None:
-            box.add(Gtk.Label(
-                label="crossfeed_sink not found — the crossfeed filter isn't loaded.\n"
-                      "Restart PipeWire (on systemd: filter-chain.service),\n"
-                      "then reopen this window."
-            ))
-            return
+            self._build_error_page()
+        else:
+            self._build_controls()
 
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        header.pack_start(Gtk.Label(label="Crossfeed"), False, False, 0)
-        self.switch = Gtk.Switch()
-        self.switch.connect("state-set", self.on_switch)
-        header.pack_end(self.switch, False, False, 0)
-        box.add(header)
+    # ------------------------------------------------------------- pages
 
-        box.add(Gtk.Label(label="Level (dB)", xalign=0))
+    def _set_page(self, widget):
+        child = self.get_child()
+        if child is not None:
+            self.remove(child)
+        self.add(widget)
+        widget.show_all()
+
+    def _build_error_page(self):
+        self.switch.hide()
+        self.header.set_subtitle("filter not loaded")
+
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page.set_margin_top(24)
+        page.set_margin_bottom(24)
+        page.set_margin_start(24)
+        page.set_margin_end(24)
+
+        icon = Gtk.Image.new_from_icon_name(
+            "audio-volume-muted-symbolic", Gtk.IconSize.DIALOG)
+        msg = Gtk.Label(
+            label="The crossfeed filter isn't loaded.\n"
+                  "Restart PipeWire (on systemd: filter-chain.service),\n"
+                  "then try again."
+        )
+        msg.set_justify(Gtk.Justification.CENTER)
+        retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER)
+        retry.get_style_context().add_class("suggested-action")
+        retry.connect("clicked", self.on_retry)
+
+        page.pack_start(icon, False, False, 0)
+        page.pack_start(msg, False, False, 0)
+        page.pack_start(retry, False, False, 6)
+        self._set_page(page)
+
+    def _slider_section(self, title, caption, adjustment, digits, climb_rate, mark):
+        """A titled slider block: bold title + spin button, dim caption,
+        and a full-width scale with a tick at the conf default value."""
+        section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        title_label = Gtk.Label(xalign=0)
+        title_label.set_markup(f"<b>{title}</b>")
+        spin = Gtk.SpinButton(adjustment=adjustment,
+                              climb_rate=climb_rate, digits=digits)
+        head.pack_start(title_label, True, True, 0)
+        head.pack_end(spin, False, False, 0)
+
+        cap = Gtk.Label(xalign=0)
+        cap.set_markup(f"<small>{GLib.markup_escape_text(caption)}</small>")
+        cap.get_style_context().add_class("dim-label")
+
+        scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL,
+                          adjustment=adjustment)
+        scale.set_digits(digits)
+        scale.set_draw_value(False)
+        scale.set_hexpand(True)
+        scale.add_mark(mark, Gtk.PositionType.BOTTOM, None)
+
+        section.pack_start(head, False, False, 0)
+        section.pack_start(cap, False, False, 0)
+        section.pack_start(scale, False, False, 0)
+        return section, scale, spin
+
+    def _build_controls(self):
+        self.switch.set_no_show_all(False)
+        self.switch.show()
+
+        # Dimmed as a whole while crossfeed is bypassed; the switch stays
+        # in the header bar so it's always reachable.
+        self.sliders_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        self.sliders_box.set_margin_top(14)
+        self.sliders_box.set_margin_bottom(18)
+        self.sliders_box.set_margin_start(18)
+        self.sliders_box.set_margin_end(18)
+
         level_adj = Gtk.Adjustment(
             value=cf.LEVEL_DEFAULT_DB, lower=cf.LEVEL_MIN_DB, upper=cf.LEVEL_MAX_DB,
             step_increment=0.5, page_increment=2.0,
         )
-        level_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.level_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=level_adj)
-        self.level_scale.set_digits(1)
-        self.level_scale.set_hexpand(True)
-        self.level_spin = Gtk.SpinButton(adjustment=level_adj, climb_rate=0.5, digits=1)
-        level_row.pack_start(self.level_scale, True, True, 0)
-        level_row.pack_start(self.level_spin, False, False, 0)
-        box.add(level_row)
-        level_adj.connect("value-changed", self.on_level_changed)
+        section, self.level_scale, self.level_spin = self._slider_section(
+            "Level (dB)", "How strongly each channel is mixed into the other",
+            level_adj, digits=1, climb_rate=0.5, mark=cf.LEVEL_DEFAULT_DB,
+        )
+        self.sliders_box.pack_start(section, False, False, 0)
+        level_adj.connect("value-changed", self.on_value_changed)
 
-        box.add(Gtk.Label(label="Crossover Frequency (Hz)", xalign=0))
         freq_adj = Gtk.Adjustment(
             value=cf.FULL_FREQ, lower=cf.FREQ_MIN, upper=cf.FREQ_MAX,
             step_increment=10, page_increment=50,
         )
-        freq_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.freq_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=freq_adj)
-        self.freq_scale.set_digits(0)
-        self.freq_scale.set_hexpand(True)
-        self.freq_spin = Gtk.SpinButton(adjustment=freq_adj, climb_rate=1, digits=0)
-        freq_row.pack_start(self.freq_scale, True, True, 0)
-        freq_row.pack_start(self.freq_spin, False, False, 0)
-        box.add(freq_row)
-        freq_adj.connect("value-changed", self.on_freq_changed)
+        section, self.freq_scale, self.freq_spin = self._slider_section(
+            "Crossover frequency (Hz)", "Only frequencies below this bleed across",
+            freq_adj, digits=0, climb_rate=1, mark=cf.FULL_FREQ,
+        )
+        self.sliders_box.pack_start(section, False, False, 0)
+        freq_adj.connect("value-changed", self.on_value_changed)
 
-        self.status = Gtk.Label(label="")
-        self.status.set_xalign(0)
-        box.add(self.status)
+        self._set_page(self.sliders_box)
 
         self.restore_persisted_if_needed()
-        self.sync_from_pipewire(initial=True)
+        persisted = cf.load_persisted_state()
+        if persisted is not None:
+            # Initialize from the saved state, not the live params: while
+            # bypassed the live gain is 0, which says nothing about the
+            # level the user last chose — showing the default here meant
+            # the next toggle-on silently overwrote the saved level.
+            enabled, level_db, freq_hz = persisted
+            self._show_state(enabled, level_db, freq_hz)
+        else:
+            self.sync_from_pipewire(initial=True)
+
         self._state_mtime = cf.state_mtime()
-        GLib.timeout_add(1000, self.poll_state_file)
+        if not self._polling:
+            self._polling = True
+            GLib.timeout_add(1000, self.poll_state_file)
+
+    def on_retry(self, _button):
+        self.node_id = cf.get_node_id()
+        if self.node_id is not None:
+            self.header.set_subtitle(None)
+            self._build_controls()
+
+    # ------------------------------------------------------------- state
 
     def restore_persisted_if_needed(self):
         # Belt-and-suspenders: normally crossfeed-restore.service already
@@ -107,39 +197,56 @@ class CrossfeedWindow(Gtk.Window):
         if abs(gain2 - cur_gain2) > 0.01 or abs(freq - freq_hz) > 1.0:
             cf.apply_state(self.node_id, enabled, level_db, freq_hz)
 
+    def _show_state(self, enabled, level_db, freq_hz):
+        """Reflect a state in the widgets without re-applying it."""
+        level_db = _clamp(level_db, cf.LEVEL_MIN_DB, cf.LEVEL_MAX_DB)
+        freq_hz = _clamp(freq_hz, cf.FREQ_MIN, cf.FREQ_MAX)
+        self._suppress = True
+        self.switch.set_active(enabled)
+        self.level_scale.set_value(level_db)
+        self.freq_scale.set_value(freq_hz)
+        self._suppress = False
+        self.sliders_box.set_sensitive(enabled)
+        self.update_status(enabled, level_db, freq_hz)
+
     def _apply_and_update(self):
         enabled = self.switch.get_active()
         level_db = self.level_scale.get_value()
         freq_hz = self.freq_scale.get_value()
-        cf.apply_state(self.node_id, enabled, level_db, freq_hz)
+        if not cf.apply_state(self.node_id, enabled, level_db, freq_hz):
+            # PipeWire may have restarted under us, leaving our node id
+            # stale — re-resolve it and retry once.
+            node_id = cf.get_node_id()
+            if node_id is not None and node_id != self.node_id:
+                self.node_id = node_id
+                cf.apply_state(self.node_id, enabled, level_db, freq_hz)
         cf.save_persisted_state(enabled, level_db, freq_hz)
         # We just wrote the state file ourselves — remember its mtime so
         # poll_state_file doesn't mistake our own change for an external one.
         self._state_mtime = cf.state_mtime()
+        self.sliders_box.set_sensitive(enabled)
         self.update_status(enabled, level_db, freq_hz)
 
     def sync_from_pipewire(self, initial=False):
         gain2, freq = cf.read_state(self.node_id)
         enabled = gain2 > cf.OFF_THRESHOLD_LINEAR
-        level_db = cf.linear_to_db(gain2) if enabled else (
-            cf.LEVEL_DEFAULT_DB if initial else self.level_scale.get_value()
-        )
-        level_db = max(cf.LEVEL_MIN_DB, min(cf.LEVEL_MAX_DB, level_db))
-        freq = max(cf.FREQ_MIN, min(cf.FREQ_MAX, freq))
-
-        self._suppress = True
-        self.switch.set_active(enabled)
-        self.level_scale.set_value(level_db)
-        self.freq_scale.set_value(freq)
-        self._suppress = False
-        self.update_status(enabled, level_db, freq)
+        if enabled:
+            level_db = cf.linear_to_db(gain2)
+        elif initial:
+            level_db = cf.LEVEL_DEFAULT_DB
+        else:
+            level_db = self.level_scale.get_value()
+        self._show_state(enabled, level_db, freq)
 
     def update_status(self, enabled, level_db, freq_hz):
-        pct = cf.db_to_linear(level_db) / cf.FULL_GAIN2 * 100.0
-        self.status.set_text(
-            f"{level_db:.1f} dB ({pct:.0f}%) · {freq_hz:.0f} Hz · "
-            f"{'ON' if enabled else 'OFF'}"
-        )
+        if enabled:
+            pct = cf.db_to_linear(level_db) / cf.FULL_GAIN2 * 100.0
+            self.header.set_subtitle(
+                f"{level_db:.1f} dB ({pct:.0f}%) · {freq_hz:.0f} Hz")
+        else:
+            self.header.set_subtitle("bypassed")
+
+    # ----------------------------------------------------------- signals
 
     def on_switch(self, switch, state):
         if self._suppress:
@@ -147,12 +254,7 @@ class CrossfeedWindow(Gtk.Window):
         GLib.idle_add(self._apply_and_update)
         return False
 
-    def on_level_changed(self, adjustment):
-        if self._suppress:
-            return
-        self._apply_and_update()
-
-    def on_freq_changed(self, adjustment):
+    def on_value_changed(self, adjustment):
         if self._suppress:
             return
         self._apply_and_update()
@@ -173,14 +275,7 @@ class CrossfeedWindow(Gtk.Window):
         if persisted is None:
             return True
         enabled, level_db, freq_hz = persisted
-        level_db = max(cf.LEVEL_MIN_DB, min(cf.LEVEL_MAX_DB, level_db))
-        freq_hz = max(cf.FREQ_MIN, min(cf.FREQ_MAX, freq_hz))
-        self._suppress = True
-        self.switch.set_active(enabled)
-        self.level_scale.set_value(level_db)
-        self.freq_scale.set_value(freq_hz)
-        self._suppress = False
-        self.update_status(enabled, level_db, freq_hz)
+        self._show_state(enabled, level_db, freq_hz)
         return True
 
 

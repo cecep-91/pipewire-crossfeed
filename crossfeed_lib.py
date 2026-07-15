@@ -43,9 +43,11 @@ PARAM_RE = re.compile(
 def get_node_id():
     try:
         out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        objs = json.loads(out)
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
+        # Daemon not running, pw-dump missing, or output truncated mid-write.
         return None
-    for obj in json.loads(out):
+    for obj in objs:
         if obj.get("info", {}).get("props", {}).get("node.name") == NODE_NAME:
             return obj["id"]
     return None
@@ -60,10 +62,13 @@ def linear_to_db(linear):
 
 
 def read_state(node_id):
-    out = subprocess.run(
-        ["pw-cli", "enum-params", str(node_id), "Props"],
-        capture_output=True, text=True,
-    ).stdout
+    try:
+        out = subprocess.run(
+            ["pw-cli", "enum-params", str(node_id), "Props"],
+            capture_output=True, text=True,
+        ).stdout
+    except FileNotFoundError:
+        out = ""
     vals = dict(PARAM_RE.findall(out))
     gain2 = float(vals.get("outL:Gain 2", FULL_GAIN2))
     freq = float(vals.get("dirL:Freq", FULL_FREQ))
@@ -90,6 +95,12 @@ def wait_for_conf_init(node_id, timeout=5.0, poll_interval=0.1):
 
 
 def apply_state(node_id, enabled, level_db, freq_hz):
+    """Push the settings to the live filter-chain node.
+
+    Returns True if pw-cli accepted them, False otherwise (daemon gone,
+    stale node id after a PipeWire restart, ...) so callers can re-resolve
+    the node id and retry instead of failing silently.
+    """
     linear = db_to_linear(level_db)
     fraction = linear / FULL_GAIN2
     if enabled:
@@ -110,10 +121,14 @@ def apply_state(node_id, enabled, level_db, freq_hz):
         f'"xR:Freq" {freq_hz:.1f} '
         "] }"
     )
-    subprocess.run(
-        ["pw-cli", "set-param", str(node_id), "Props", params],
-        capture_output=True, text=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["pw-cli", "set-param", str(node_id), "Props", params],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return False
+    return proc.returncode == 0
 
 
 def save_persisted_state(enabled, level_db, freq_hz):
