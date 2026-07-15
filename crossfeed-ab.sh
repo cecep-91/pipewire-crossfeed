@@ -3,8 +3,9 @@
 # Toggles between "ON" (crossfeed applied) and "OFF" (bypass, direct passthrough)
 # No restarts, no audio dropout — just flips DSP coefficients live.
 
-# The filter-chain node exposing the DSP params — both conf variants name it
-# "crossfeed_sink" (the easyeffects variant's selectable sink is "crossfeed").
+# The filter-chain node exposing the DSP params. The selectable sink users
+# pick as their output device is named "crossfeed" — this is the hidden DSP
+# node behind it.
 NODE_NAME="crossfeed_sink"
 STATE_DIR="$HOME/.config/pipewire-crossfeed"
 STATE_PATH="$STATE_DIR/state.json"

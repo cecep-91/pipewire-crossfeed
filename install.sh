@@ -15,10 +15,6 @@
 # Works from a git checkout (runs the Python scripts via python3) or from a
 # binary release tarball (bundled crossfeed-gui / crossfeed-restore ELFs).
 # Safe to re-run. `./install.sh --uninstall` removes everything it installed.
-#
-# `./install.sh --easyeffects` installs the crossfeed-easyeffects.conf
-# variant instead: crossfeed as a real selectable sink, for chaining behind
-# EasyEffects/JamesDSP (see that file's comments).
 set -eu
 
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -54,24 +50,6 @@ find_python3() {
   command -v python3 2>/dev/null || echo python3
 }
 PYTHON3=$(find_python3)
-
-# WirePlumber < 0.5 has no smart-filter insertion, so crossfeed.conf's
-# playback side (which relies on smart-filter placement and omits
-# target.object) needs that target added back — see the comment in
-# crossfeed.conf. Detect it here so users don't have to hand-edit the
-# installed conf; if detection fails for any reason, leave the conf as
-# shipped (matches prior behavior) and let the README's manual fallback apply.
-WP_LEGACY=0
-if have wireplumber; then
-  wp_ver=$(wireplumber --version 2>/dev/null \
-    | sed -n 's/.*[Ll]inked with libwireplumber \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
-  wp_major=${wp_ver%% *}
-  wp_minor=${wp_ver##* }
-  if [ -n "$wp_major" ] && [ -n "$wp_minor" ] \
-     && [ "$wp_major" = 0 ] && [ "$wp_minor" -lt 5 ] 2>/dev/null; then
-    WP_LEGACY=1
-  fi
-fi
 
 # ---------------------------------------------------------------- detection
 
@@ -175,26 +153,19 @@ uninstall() {
   echo "    delete that directory too if you don't want them."
 }
 
-CONF_SRC="crossfeed.conf"
 case "${1-}" in
   --uninstall|uninstall) uninstall; exit 0 ;;
-  --easyeffects) CONF_SRC="crossfeed-easyeffects.conf" ;;
   "") ;;
-  *) echo "usage: $0 [--easyeffects] [--uninstall]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--uninstall]" >&2; exit 2 ;;
 esac
 
 # ------------------------------------------------------------------ install
 
 check_deps
 
-echo "==> Installing filter-chain conf ($CONF_SRC) to $CONF_DIR"
+echo "==> Installing filter-chain conf (crossfeed.conf) to $CONF_DIR"
 mkdir -p "$CONF_DIR"
-cp "$SRC_DIR/$CONF_SRC" "$CONF_DIR/crossfeed.conf"
-if [ "$CONF_SRC" = "crossfeed.conf" ] && [ "$WP_LEGACY" = 1 ]; then
-  echo "==> WirePlumber < 0.5 detected — enabling target.object fallback"
-  sed -i 's|^\( *\)#   target.object  = "@DEFAULT_SINK@"|\1target.object  = "@DEFAULT_SINK@"|' \
-    "$CONF_DIR/crossfeed.conf"
-fi
+cp "$SRC_DIR/crossfeed.conf" "$CONF_DIR/crossfeed.conf"
 
 echo "==> Installing programs to $BIN_DIR"
 mkdir -p "$BIN_DIR"
@@ -273,20 +244,10 @@ case ":$PATH:" in
 esac
 
 echo "==> Done."
-if [ "$CONF_SRC" = "crossfeed-easyeffects.conf" ]; then
-  echo "Set 'Crossfeed' as EasyEffects' output device (or as the system output"
-  echo "device if nothing plays through EasyEffects). Do NOT set Crossfeed as"
-  echo "the system default while EasyEffects outputs into it."
-else
-  if [ "$WP_LEGACY" = 1 ]; then
-    echo "WirePlumber < 0.5 detected: enabled the target.object fallback in"
-    echo "the installed conf. Pick 'Crossfeed' as the output device in your"
-    echo "sound settings (or pavucontrol)."
-  else
-    echo "With WirePlumber >= 0.5 the filter applies to your default output"
-    echo "automatically; on older setups pick 'Crossfeed' as the output device"
-    echo "in your sound settings (or pavucontrol)."
-  fi
-fi
+echo "Pick 'Crossfeed' as your output device in Settings > Sound (or"
+echo "pavucontrol) — or as an effects app's (EasyEffects, JamesDSP, ...)"
+echo "output device if you chain one in front. Do NOT set Crossfeed as your"
+echo "system default output — leave that on your real device, or the DSP's"
+echo "playback (which targets the default) will loop back into itself."
 echo "Launch 'Crossfeed Control' from your app menu (or: $BIN_DIR/crossfeed-gui)."
 echo "Your level/frequency/on-off settings will survive reboots and logout."
