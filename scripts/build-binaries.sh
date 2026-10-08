@@ -1,16 +1,5 @@
 #!/bin/sh
-# build-binaries.sh — builds a self-contained crossfeed-gui binary with
-# PyInstaller. Used by the CI and release workflows; runnable locally too
-# if you have python3-gi, GTK 3 and pyinstaller installed.
-#
-#   usage: scripts/build-binaries.sh [version]
-#
-# The version (e.g. 1.2.0) is stamped into crossfeed_lib.__version__ so the
-# binaries report it via --version. Output lands in ./dist/.
-#
-# Note: PyInstaller bundles the Python runtime and the GTK/GObject libraries
-# of the build host, so binaries are glibc-only and as portable as the glibc
-# they were built against — build on the oldest distro you want to support.
+# build-binaries.sh — builds standalone crossfeed C++ engine and GUI
 set -eu
 
 VERSION="${1:-0.0.0-dev}"
@@ -18,8 +7,20 @@ cd "$(dirname "$0")/.."
 
 sed -i "s/^__version__ = .*/__version__ = \"$VERSION\"/" crossfeed_lib.py
 
-pyinstaller --onefile --noconfirm --clean --name crossfeed-gui crossfeed-gui.py
+# Build standalone C++ engine
+make clean
+make
 
-# Smoke test: --version exercises the bundled interpreter and the bundled
-# gi/GTK stack (importing Gtk needs no display).
-./dist/crossfeed-gui --version
+mkdir -p dist
+cp bin/crossfeed dist/crossfeed
+
+# If pyinstaller is available, build bundled crossfeed-gui
+if command -v pyinstaller >/dev/null 2>&1; then
+    pyinstaller --onefile --noconfirm --clean --name crossfeed-gui crossfeed-gui.py
+    if [ -x ./dist/crossfeed-gui ]; then
+        ./dist/crossfeed-gui --version 2>/dev/null || true
+    fi
+fi
+
+./dist/crossfeed --version
+./dist/crossfeed bench

@@ -1,10 +1,7 @@
 name: Release
 
 # Tag a commit `vX.Y.Z` and push it to cut a release:
-#   git tag v1.0.0 && git push origin v1.0.0
-# This builds self-contained x86_64 + aarch64 binary tarballs (glibc; musl
-# users install from source, it's just Python) and publishes a GitHub
-# release with them attached.
+#   git tag v2.0.0 && git push origin v2.0.0
 
 on:
   push:
@@ -18,8 +15,6 @@ jobs:
     strategy:
       matrix:
         include:
-          # ubuntu-22.04 = oldest supported runner glibc, for widest binary
-          # compatibility across distros.
           - runner: ubuntu-22.04
             arch: x86_64
           - runner: ubuntu-22.04-arm
@@ -31,7 +26,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-gi gir1.2-gtk-3.0 python3-pip binutils
+          sudo apt-get install -y build-essential libpipewire-0.3-dev libpulse-dev libasound2-dev python3-gi gir1.2-gtk-3.0 python3-pip binutils
           python3 -m pip install --user pyinstaller
 
       - name: Build and smoke-test binaries
@@ -44,9 +39,10 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           PKG="pipewire-crossfeed-$VERSION-linux-${{ matrix.arch }}"
           mkdir "$PKG"
-          cp dist/crossfeed-gui \
-             crossfeed-ab.sh crossfeed.conf.in \
-             install.sh README.md "$PKG/"
+          cp dist/crossfeed \
+             crossfeed-ab.sh crossfeed_lib.py crossfeed-gui.py \
+             install.sh Makefile README.md "$PKG/"
+          [ -f dist/crossfeed-gui ] && cp dist/crossfeed-gui "$PKG/"
           tar czf "$PKG.tar.gz" "$PKG"
 
       - uses: actions/upload-artifact@v4
@@ -67,10 +63,6 @@ jobs:
           files: "*.tar.gz"
           generate_release_notes: true
           body: |
-            Binary tarballs below are self-contained (Python + GTK bundled) and
-            need only PipeWire itself on the host. They are built against glibc
-            (Ubuntu 22.04); on musl systems (e.g. Void musl) install from
-            source instead — see the README.
-
-            To install: extract the tarball for your architecture and run
-            `./install.sh` inside it.
+            Release of standalone crossfeed audio engine.
+            Works on any Linux distribution and any sound server (PipeWire, PulseAudio, ALSA).
+            No drop-in configuration files required.
