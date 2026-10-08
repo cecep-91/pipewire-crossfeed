@@ -17,7 +17,7 @@ std::string Config::get_config_dir() {
     if (home && *home) {
         return std::string(home) + "/.config/pipewire-crossfeed";
     }
-    return "/tmp/pipewire-crossfeed";
+    return "/tmp/pipewire-crossfeed-" + std::to_string(getuid());
 }
 
 std::string Config::get_state_file_path() {

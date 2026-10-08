@@ -1,6 +1,8 @@
 #include "ipc.hpp"
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -39,6 +41,8 @@ bool IpcServer::start(const std::string& socket_path) {
         server_fd_ = -1;
         return false;
     }
+
+    chmod(socket_path_.c_str(), 0600);
 
     if (listen(server_fd_, 5) < 0) {
         close(server_fd_);
@@ -79,6 +83,12 @@ void IpcServer::run_loop() {
         if (ret > 0 && (pfd.revents & POLLIN)) {
             int client_fd = accept(server_fd_, nullptr, nullptr);
             if (client_fd >= 0) {
+                struct timeval tv{};
+                tv.tv_sec = 0;
+                tv.tv_usec = 500000; // 500ms timeout
+                setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
                 char buf[1024];
                 ssize_t n = read(client_fd, buf, sizeof(buf) - 1);
                 if (n > 0) {
