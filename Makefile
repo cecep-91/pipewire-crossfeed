@@ -35,7 +35,7 @@ SRCS = src/main.cpp \
 OBJS = $(SRCS:.cpp=.o)
 TARGET = bin/crossfeed
 
-.PHONY: all clean install uninstall bench deb rpm xbps pkg check-deps
+.PHONY: all clean install uninstall bench deb rpm xbps pkg check-deps test
 
 all: $(TARGET)
 
@@ -72,6 +72,15 @@ $(OBJS): | check-deps
 bin:
 	mkdir -p bin
 
+TEST_TARGET = bin/test_dsp
+TEST_SRCS = test/test_dsp.cpp src/dsp.cpp src/config.cpp
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+$(TEST_TARGET): $(TEST_SRCS) | bin check-deps
+	$(CXX) $(CXXFLAGS) -Isrc $(TEST_SRCS) -o $@
+
 bench: $(TARGET)
 	./$(TARGET) bench
 
@@ -88,7 +97,7 @@ pkg: $(TARGET)
 	bash ./scripts/package.sh all
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TARGET) $(TEST_TARGET)
 	rm -rf bin dist build
 
 install: $(TARGET)
