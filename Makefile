@@ -2,6 +2,7 @@ CXX ?= g++
 CXXFLAGS ?= -O3 -std=c++17 -Wall -Wextra -ffast-math -pthread
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
+DATADIR ?= $(PREFIX)/share
 
 # Check for libraries via pkg-config, or fallback to standard flags
 PKG_CONFIG ?= pkg-config
@@ -14,13 +15,17 @@ PULSE_CFLAGS := $(shell $(PKG_CONFIG) --cflags libpulse libpulse-simple 2>/dev/n
 ALSA_LIBS := $(shell $(PKG_CONFIG) --libs alsa 2>/dev/null || echo "-lasound")
 ALSA_CFLAGS := $(shell $(PKG_CONFIG) --cflags alsa 2>/dev/null || echo "")
 
-ALL_CFLAGS := $(CXXFLAGS) $(PW_CFLAGS) $(PULSE_CFLAGS) $(ALSA_CFLAGS)
-ALL_LIBS := $(PW_LIBS) $(PULSE_LIBS) $(ALSA_LIBS) -pthread
+GTK_LIBS := $(shell $(PKG_CONFIG) --libs gtk+-3.0 ayatana-appindicator3-0.1 2>/dev/null || echo "-lgtk-3 -layatana-appindicator3")
+GTK_CFLAGS := $(shell $(PKG_CONFIG) --cflags gtk+-3.0 ayatana-appindicator3-0.1 2>/dev/null || echo "-I/usr/include/gtk-3.0")
+
+ALL_CFLAGS := $(CXXFLAGS) $(PW_CFLAGS) $(PULSE_CFLAGS) $(ALSA_CFLAGS) $(GTK_CFLAGS)
+ALL_LIBS := $(PW_LIBS) $(PULSE_LIBS) $(ALSA_LIBS) $(GTK_LIBS) -pthread
 
 SRCS = src/main.cpp \
        src/dsp.cpp \
        src/config.cpp \
        src/ipc.cpp \
+       src/gui.cpp \
        src/audio_backend.cpp \
        src/pipewire_backend.cpp \
        src/pulse_backend.cpp \
@@ -30,7 +35,7 @@ SRCS = src/main.cpp \
 OBJS = $(SRCS:.cpp=.o)
 TARGET = bin/crossfeed
 
-.PHONY: all clean install uninstall bench
+.PHONY: all clean install uninstall bench deb rpm xbps pkg
 
 all: $(TARGET)
 
@@ -46,13 +51,34 @@ bin:
 bench: $(TARGET)
 	./$(TARGET) bench
 
+deb: $(TARGET)
+	./scripts/package.sh deb
+
+rpm: $(TARGET)
+	./scripts/package.sh rpm
+
+xbps: $(TARGET)
+	./scripts/package.sh xbps
+
+pkg: $(TARGET)
+	./scripts/package.sh all
+
 clean:
 	rm -f $(OBJS) $(TARGET)
-	rm -rf bin
+	rm -rf bin dist build
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/crossfeed
+	install -d $(DESTDIR)$(DATADIR)/applications
+	install -m 644 data/crossfeed.desktop $(DESTDIR)$(DATADIR)/applications/crossfeed.desktop
+	install -d $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps
+	install -m 644 data/crossfeed.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/crossfeed.svg
+	install -d $(DESTDIR)$(DATADIR)/licenses/crossfeed
+	install -m 644 LICENSE $(DESTDIR)$(DATADIR)/licenses/crossfeed/LICENSE
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/crossfeed
+	rm -f $(DESTDIR)$(DATADIR)/applications/crossfeed.desktop
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/crossfeed.svg
+	rm -rf $(DESTDIR)$(DATADIR)/licenses/crossfeed

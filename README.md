@@ -1,86 +1,98 @@
 # pipewire-crossfeed (v2.0 Standalone)
 
-A high-performance, standalone headphone crossfeed audio processor for Linux.
+A high-performance, standalone headphone crossfeed audio processor for Linux with a native GTK3 GUI, system tray indicator, and universal sound server support.
 
-Crossfeed blends a low-passed amount of each channel into the opposite channel (mimicking how sound naturally reaches both ears from stereo speakers in a room), reducing listening fatigue from hard-panned recordings on headphones.
+Crossfeed blends a subtle low-passed acoustic delay of each stereo channel into the opposite channel (mimicking how sound naturally reaches both ears from speakers in a room), reducing listening fatigue from hard-panned recordings on headphones.
 
-Designed from the ground up to be **100% standalone, distro-agnostic, and configuration-free**.
+Designed from the ground up to be **100% standalone, distro-agnostic, configuration-free, and packaged as a single native binary**.
 
 ---
 
 ## Key Features
 
-- **Zero Configuration Dependencies**: No drop-in files in `~/.config/pipewire/` or `/etc`. No server restarts or session re-logins required. When the engine runs, it creates its virtual sink dynamically; when stopped, it cleans up cleanly.
+- **Single Unified Native Application**:
+  - The entire suite (GUI, System Tray, audio DSP engine, service management, and CLI) is compiled into a single ultra-lightweight C++ binary (`bin/crossfeed`).
+  - Zero Python dependencies and zero shell wrapper scripts.
+- **System Tray Integration**:
+  - Full Ayatana AppIndicator status notifier support across GNOME, KDE Plasma, XFCE, Sway, Hyprland, and other Wayland/X11 desktops.
+  - **Window Hide-on-Close**: Closing the window hides it into the system tray instead of exiting, keeping crossfeed running in the background.
+  - Context menu allows quick toggling (On / Bypass), preset switching, showing the window, starting/stopping the engine, and cleanly quitting.
+- **Zero Configuration Dependencies**:
+  - No drop-in files in `~/.config/pipewire/` or `/etc`. No server restarts or session re-logins required. When the engine runs, it attaches to your active audio output dynamically; when stopped, it restores default routing cleanly.
 - **Universal Sound Server Support**: Runs on **any Linux distribution** across **any sound server**:
-  - **PipeWire** (via native protocol or PipeWire-Pulse)
-  - **PulseAudio** (native)
-  - **ALSA** (direct hardware PCM for minimal/server setups with no audio daemon)
+  - **PipeWire** (Direct Native SPA Filter with zero-latency in-line processing)
+  - **PulseAudio** (Native low-latency client)
+  - **ALSA** (Direct hardware PCM for minimal setups with no audio daemon)
   - Automatic backend detection (`--backend auto`, `pulse`, or `alsa`).
 - **Seamless Coexistence with Audio Processors (EasyEffects, JamesDSP, etc.)**:
-  - Safe to run simultaneously with EasyEffects, JamesDSP, PulseEffects, or other DSP pipelines.
-  - **Zero Feedback Loops**: Intelligent target resolution guarantees the playback stream never loops back to the Crossfeed sink itself, even if Crossfeed is set as the system default output.
-  - Flexible routing: Apps → EasyEffects → Crossfeed → Headphones, or Apps → Crossfeed → EasyEffects → Headphones.
+  - Automatic stream disambiguation and cycle detection.
+  - When EasyEffects or external DSP processors are running, Crossfeed automatically prioritizes processed streams without comb-filtering or volume bleed.
 - **Ultra-High Performance C++ DSP**:
   - Built with optimized C++17 and Robert Bristow-Johnson Direct Form II Transposed biquad filters.
-  - **Throughput**: > 90,000,000 to 260,000,000 stereo frames/sec.
-  - **CPU Usage**: **< 0.05% of a single CPU core** in real-time playback.
-  - **DSP Latency**: Under 3 microseconds computation per buffer.
-- **Multiple Control Interfaces**:
-  - Full CLI (`crossfeed run`, `start`, `stop`, `status`, `toggle`, `set`, `bench`).
-  - Fast GTK Control Panel (`crossfeed-gui`).
-  - Headless one-shot toggle (`crossfeed-ab`) ideal for desktop keybindings.
-  - Unix Domain Socket IPC for low-latency script integration.
+  - **Throughput**: > 180,000,000 stereo frames/sec.
+  - **CPU Usage**: **< 0.03% of a single CPU core** in real-time playback.
+  - **DSP Latency**: Sub-microsecond (1.4 µs) computation per buffer.
+- **Packaging Support for Major Linux Distributions**:
+  - Built-in generators for `.xbps` (Void Linux), `.deb` (Debian/Ubuntu), and `.rpm` (Fedora/RHEL/openSUSE).
 
 ---
 
-## Contents
+## Distro Packaging
 
-| Component | Purpose |
+You can build distribution packages directly using `make`:
+
+```sh
+# Build all packages (.xbps, .deb, and .rpm) into dist/
+make pkg
+
+# Or build individual packages:
+make xbps   # Void Linux (.xbps)
+make deb    # Debian, Ubuntu, Linux Mint (.deb)
+make rpm    # Fedora, RHEL, openSUSE (.rpm)
+```
+
+Packages are placed in the `dist/` directory and install:
+- `/usr/bin/crossfeed`
+- `/usr/share/applications/crossfeed.desktop`
+- `/usr/share/icons/hicolor/scalable/apps/crossfeed.svg`
+- `/usr/share/licenses/crossfeed/LICENSE`
+
+### Installing Generated Packages
+
+```sh
+# Void Linux
+sudo xbps-install -R dist crossfeed
+
+# Debian / Ubuntu
+sudo dpkg -i dist/crossfeed_2.0.0-1_amd64.deb
+
+# Fedora / RHEL / openSUSE
+sudo rpm -ivh dist/crossfeed-2.0.0-1.x86_64.rpm
+```
+
+---
+
+## Build from Source & Local Installation
+
+### Prerequisites
+
+| Distro | Dependencies |
 |---|---|
-| `bin/crossfeed` | Standalone C++ engine daemon & CLI management tool |
-| `crossfeed-gui.py` | GTK3 control panel: toggle switch, dB blend slider, crossover frequency slider |
-| `crossfeed-ab.sh` | Headless toggle for keyboard shortcuts with desktop notifications |
-| `install.sh` | User installer (`./install.sh --uninstall` to remove) |
-| `Makefile` | Fast, dependency-light standard Makefile |
+| **Void Linux** | `sudo xbps-install -S base-devel pipewire-devel pulseaudio-devel alsa-lib-devel gtk+3-devel libayatana-appindicator-devel` |
+| **Ubuntu / Debian** | `sudo apt install build-essential libpipewire-0.3-dev libpulse-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev` |
+| **Fedora** | `sudo dnf install gcc-c++ make pipewire-devel pulseaudio-libs-devel alsa-lib-devel gtk3-devel libayatana-appindicator-devel` |
+| **Arch Linux** | `sudo pacman -S --needed base-devel pipewire libpulse alsa-lib gtk3 libayatana-appindicator` |
 
----
-
-## Requirements
-
-The C++ engine uses standard POSIX and Linux audio libraries available on every distribution:
-- A C++17 compiler (`g++` or `clang++`) and `make`
-- `libpulse` (installed by default on systems with PipeWire or PulseAudio)
-- `libasound` (ALSA runtime library)
-- (Optional for GUI) Python 3 with GTK 3 (`python3-gi`)
-- (Optional for notifications) `libnotify` / `notify-send`
-
-### Distro Package Hints
-
-| Distro | Command |
-|---|---|
-| **Ubuntu / Debian** | `sudo apt install build-essential libpulse-dev libasound2-dev python3-gi gir1.2-gtk-3.0 libnotify-bin` |
-| **Arch Linux** | `sudo pacman -S --needed base-devel libpulse alsa-lib python-gobject gtk3 libnotify` |
-| **Fedora** | `sudo dnf install gcc-c++ make pulseaudio-libs-devel alsa-lib-devel python3-gobject gtk3 libnotify` |
-| **Void Linux** | `sudo xbps-install -S base-devel pulseaudio-devel alsa-lib-devel python3-gobject gtk+3 libnotify` |
-| **Alpine Linux** | `doas apk add build-base pulseaudio-dev alsa-lib-dev py3-gobject3 gtk+3.0 libnotify` |
-| **openSUSE** | `sudo zypper install gcc-c++ make libpulse-devel alsa-devel python3-gobject typelib-1_0-Gtk-3_0 libnotify-tools` |
-
----
-
-## Installation
-
-### From Source
+### Build & Install
 
 ```sh
 git clone https://github.com/ikuu/pipewire-crossfeed.git
 cd pipewire-crossfeed
+make
 ./install.sh
 ```
 
-The installer builds `bin/crossfeed`, installs binaries into `~/.local/bin/`, installs the desktop launcher, and cleans up any legacy drop-in configs from older versions.
-
-### Uninstall
-
+To uninstall:
 ```sh
 ./install.sh --uninstall
 ```
@@ -89,106 +101,50 @@ The installer builds `bin/crossfeed`, installs binaries into `~/.local/bin/`, in
 
 ## Usage
 
-### 1. Starting the Engine
+### 1. Graphical Interface & System Tray
 
-Start in background:
+Launch the GUI:
 ```sh
+crossfeed
+```
+Or search for **Crossfeed** in your desktop application launcher / app menu.
+
+- **Master Switch**: Toggle crossfeed filtering on/off (bypass).
+- **Blend Level Slider**: Adjust opposite-ear feed intensity (-30.0 dB to -6.0 dB, default -10.0 dB).
+- **Crossover Frequency Slider**: Adjust acoustic cutoff frequency (200 Hz to 2000 Hz, default 700 Hz).
+- **Presets**: One-click Subtle, Default (Bauer), and Strong presets.
+- **System Tray**: Closing the window hides it into the notification tray. Right-click the tray icon to toggle, change presets, or quit.
+
+### 2. Command Line Controls
+
+The single binary also serves as a complete CLI control utility:
+
+```sh
+# Start the background daemon
 crossfeed start
-```
 
-Or run directly in foreground to see real-time output:
-```sh
-crossfeed run
-```
-
-### 2. Audio Routing
-
-Crossfeed integrates directly into your current output device (headphones/speakers):
-- **Zero manual sink switching**: All system and application audio automatically filters through Crossfeed into your active hardware output. You do not need to change or switch devices in sound settings!
-- **Zero extra sinks**: Operates cleanly as an in-line filter in the PipeWire audio graph.
-- **Zero feedback loops**: Guaranteed feedback-loop immunity; audio routes synchronously and safely into your hardware output.
-
-### 3. Controlling the Filter
-
-```sh
-# View current status, routing, and parameters
+# Check status and active audio routing
 crossfeed status
 
-# View status in machine-readable JSON
-crossfeed status --json
-
-# Instant bypass toggle (on <-> off)
+# Toggle crossfeed filtering (great for keyboard shortcuts)
 crossfeed toggle
 
-# Explicitly enable or bypass
+# Force on or off (bypassed)
 crossfeed on
 crossfeed off
 
-# Adjust parameters on the fly (zero audio dropouts)
-crossfeed set --level -12.5 --freq 650
-```
+# Adjust parameters on the fly
+crossfeed set --level -12.0 --freq 650
 
-### 4. Graphical Control Panel
+# Stop the engine cleanly
+crossfeed stop
 
-Launch **Crossfeed Control** from your application menu, or run:
-```sh
-crossfeed-gui
-```
-- Toggle switch to bypass / enable.
-- Sliders and numeric entry for Level (-30 dB to -6 dB) and Crossover Frequency (200 Hz to 2000 Hz).
-- One-click "Start Engine" button if the daemon is stopped.
-
-### 5. Keyboard Shortcut (AB Toggle)
-
-Bind `crossfeed-ab` (or `crossfeed toggle`) to a keyboard shortcut (e.g. `Super + X`). It flips between crossfeed and direct bypass instantly and posts a desktop notification.
-
----
-
-## EasyEffects & Other DSP Processors
-
-Crossfeed works seamlessly alongside other audio processors:
-
-- **Apps → EasyEffects → Crossfeed → Headphones**:
-  In EasyEffects' Output tab, select **Crossfeed** as EasyEffects' output device.
-- **Apps → Crossfeed → EasyEffects → Headphones**:
-  Start Crossfeed targeting EasyEffects:
-  ```sh
-  crossfeed set --target easyeffects_sink
-  ```
-  Crossfeed will process the sound and forward it into EasyEffects.
-
-Because our target resolver strictly avoids targeting its own input sink, neither setup will cause feedback loops or audio stutter.
-
----
-
-## Performance Verification
-
-You can check the DSP processing speed directly on your hardware at any time:
-
-```sh
+# Run DSP throughput and CPU performance benchmark
 crossfeed bench
-```
-
-Example benchmark output:
-```
-========================================================
-          PipeWire-Crossfeed DSP Performance Benchmark  
-========================================================
-Testing Biquad Direct Form II Transposed Stereo DSP Filter...
-
-  [ 44100 Hz] Throughput:   79.79 M frames/sec  |  Real-time CPU:   0.06%  |  256-frame DSP latency: 3.21 µs
-  [ 48000 Hz] Throughput:   93.29 M frames/sec  |  Real-time CPU:   0.05%  |  256-frame DSP latency: 2.74 µs
-  [ 96000 Hz] Throughput:  127.55 M frames/sec  |  Real-time CPU:   0.08%  |  512-frame DSP latency: 4.01 µs
-  [192000 Hz] Throughput:  148.71 M frames/sec  |  Real-time CPU:   0.13%  |  1024-frame DSP latency: 6.89 µs
-
-Result: The DSP engine achieves > 200 Million frames/sec throughput
-with sub-microsecond computation per buffer (< 0.03% single-core CPU),
-guaranteeing zero real-time audio jitter and no underruns.
-========================================================
 ```
 
 ---
 
 ## License
 
-MIT License.
+MIT License. See [LICENSE](LICENSE) for details.

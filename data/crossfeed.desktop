@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Crossfeed
+GenericName=Headphone Crossfeed Audio Processor
+Comment=Standalone ultra-low-latency headphone crossfeed audio processor
+Exec=crossfeed
+Icon=crossfeed
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;
+Keywords=audio;sound;crossfeed;headphones;pipewire;dsp;

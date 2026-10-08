@@ -3,6 +3,7 @@
 #include "ipc.hpp"
 #include "audio_backend.hpp"
 #include "benchmark.hpp"
+#include "gui.hpp"
 #include <iostream>
 #include <csignal>
 #include <unistd.h>
@@ -22,10 +23,11 @@ static void sig_handler(int /*signo*/) {
 }
 
 static void print_help(const char* prog) {
-    std::cout << "Usage: " << prog << " <command> [options]\n\n"
+    std::cout << "Usage: " << prog << " [command] [options]\n\n"
               << "A standalone, ultra-low-latency headphone crossfeed audio processor\n"
               << "compatible with any Linux distribution and sound server.\n\n"
               << "Commands:\n"
+              << "  gui, app          Launch the graphical user interface with system tray (default)\n"
               << "  run               Run the crossfeed engine in the foreground\n"
               << "  start             Start the crossfeed engine in the background (daemon)\n"
               << "  stop              Stop the running crossfeed engine\n"
@@ -300,12 +302,13 @@ static int cmd_set(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        print_help(argv[0]);
-        return 0;
+        return run_gui(argc, argv);
     }
 
     std::string cmd = argv[1];
-    if (cmd == "run") {
+    if (cmd == "gui" || cmd == "app" || cmd == "--gui") {
+        return run_gui(argc, argv);
+    } else if (cmd == "run") {
         return cmd_run(argc, argv);
     } else if (cmd == "start" || cmd == "--daemon") {
         return cmd_start(argc, argv);

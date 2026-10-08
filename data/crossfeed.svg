@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="grad-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1e2e"/>
+      <stop offset="100%" stop-color="#11111b"/>
+    </linearGradient>
+    <linearGradient id="grad-accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#89b4fa"/>
+      <stop offset="100%" stop-color="#74c7ec"/>
+    </linearGradient>
+    <linearGradient id="grad-wave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a6e3a1"/>
+      <stop offset="50%" stop-color="#f9e2af"/>
+      <stop offset="100%" stop-color="#f38ba8"/>
+    </linearGradient>
+  </defs>
+  <!-- Background squircle -->
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#grad-bg)" stroke="#313244" stroke-width="2"/>
+  
+  <!-- Headphone headband -->
+  <path d="M 32 64 A 32 32 0 0 1 96 64" fill="none" stroke="url(#grad-accent)" stroke-width="7" stroke-linecap="round"/>
+  
+  <!-- Left earcup -->
+  <rect x="24" y="60" width="14" height="28" rx="7" fill="#89b4fa"/>
+  <rect x="34" y="64" width="4" height="20" rx="2" fill="#cdd6f4"/>
+
+  <!-- Right earcup -->
+  <rect x="90" y="60" width="14" height="28" rx="7" fill="#89b4fa"/>
+  <rect x="90" y="64" width="4" height="20" rx="2" fill="#cdd6f4"/>
+
+  <!-- Crossfeed acoustic waves -->
+  <!-- Left-to-right cross wave -->
+  <path d="M 44 68 Q 64 60 84 76" fill="none" stroke="url(#grad-wave)" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 3"/>
+  <!-- Right-to-left cross wave -->
+  <path d="M 84 68 Q 64 76 44 76" fill="none" stroke="url(#grad-wave)" stroke-width="3" stroke-linecap="round"/>
+  <!-- Center blending point -->
+  <circle cx="64" cy="71" r="3.5" fill="#f9e2af"/>
+</svg>
