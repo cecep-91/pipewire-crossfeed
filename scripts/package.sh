@@ -152,10 +152,10 @@ mkdir -p %{buildroot}/usr/share/applications
 mkdir -p %{buildroot}/usr/share/icons/hicolor/scalable/apps
 mkdir -p %{buildroot}/usr/share/licenses/crossfeed
 
-install -m 755 ${BIN} %{buildroot}/usr/bin/crossfeed
-install -m 644 ${ROOT_DIR}/data/crossfeed.desktop %{buildroot}/usr/share/applications/crossfeed.desktop
-install -m 644 ${ROOT_DIR}/data/crossfeed.svg %{buildroot}/usr/share/icons/hicolor/scalable/apps/crossfeed.svg
-install -m 644 ${ROOT_DIR}/LICENSE %{buildroot}/usr/share/licenses/crossfeed/LICENSE
+install -m 755 "${BIN}" %{buildroot}/usr/bin/crossfeed
+install -m 644 "${ROOT_DIR}/data/crossfeed.desktop" %{buildroot}/usr/share/applications/crossfeed.desktop
+install -m 644 "${ROOT_DIR}/data/crossfeed.svg" %{buildroot}/usr/share/icons/hicolor/scalable/apps/crossfeed.svg
+install -m 644 "${ROOT_DIR}/LICENSE" %{buildroot}/usr/share/licenses/crossfeed/LICENSE
 
 %files
 /usr/bin/crossfeed

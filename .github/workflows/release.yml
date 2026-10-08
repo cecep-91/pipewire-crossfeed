@@ -11,47 +11,61 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-22.04
-            arch: x86_64
-          - runner: ubuntu-22.04-arm
-            arch: aarch64
-    runs-on: ${{ matrix.runner }}
+  build-packages:
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libpipewire-0.3-dev libpulse-dev libasound2-dev python3-gi gir1.2-gtk-3.0 python3-pip binutils
-          python3 -m pip install --user pyinstaller
+          sudo apt-get install -y build-essential libpipewire-0.3-dev libpulse-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev rpm dpkg-dev
 
-      - name: Build and smoke-test binaries
+      - name: Build crossfeed application
+        run: make -j$(nproc)
+
+      - name: Build Debian and RPM packages
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          scripts/build-binaries.sh "${GITHUB_REF_NAME#v}"
+          make deb
+          make rpm
 
-      - name: Assemble tarball
+      - name: Assemble release tarball
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          PKG="pipewire-crossfeed-$VERSION-linux-${{ matrix.arch }}"
-          mkdir "$PKG"
-          cp dist/crossfeed \
-             crossfeed-ab.sh crossfeed_lib.py crossfeed-gui.py \
-             install.sh Makefile README.md "$PKG/"
-          [ -f dist/crossfeed-gui ] && cp dist/crossfeed-gui "$PKG/"
-          tar czf "$PKG.tar.gz" "$PKG"
+          PKG="pipewire-crossfeed-$VERSION-linux-x86_64"
+          mkdir -p "$PKG/bin" "$PKG/data"
+          cp bin/crossfeed "$PKG/bin/"
+          cp data/* "$PKG/data/"
+          cp install.sh Makefile README.md LICENSE "$PKG/"
+          tar czf "dist/$PKG.tar.gz" "$PKG"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tarball-${{ matrix.arch }}
-          path: "*.tar.gz"
+          name: packages-deb-rpm-tar
+          path: dist/*
+
+  build-xbps:
+    runs-on: ubuntu-latest
+    container: ghcr.io/void-linux/void-glibc:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Void Linux dependencies
+        run: |
+          xbps-install -Suy -y base-devel pipewire-devel pulseaudio-devel alsa-lib-devel gtk+3-devel libayatana-appindicator-devel
+
+      - name: Build and package XBPS (.xbps)
+        run: |
+          make -j$(nproc)
+          make xbps
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-xbps
+          path: dist/*.xbps
 
   release:
-    needs: build
+    needs: [build-packages, build-xbps]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -60,9 +74,19 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: "*.tar.gz"
+          files: |
+            *.deb
+            *.rpm
+            *.xbps
+            *.tar.gz
           generate_release_notes: true
           body: |
-            Release of standalone crossfeed audio engine.
-            Works on any Linux distribution and any sound server (PipeWire, PulseAudio, ALSA).
-            No drop-in configuration files required.
+            ### Standalone Crossfeed Release
+
+            High-performance headphone crossfeed audio processor with native GTK3 GUI, system tray, and universal sound server support (PipeWire, PulseAudio, ALSA).
+
+            #### Packages Included:
+            - **`.deb`**: Debian, Ubuntu, Linux Mint, Pop!_OS
+            - **`.rpm`**: Fedora, RHEL, openSUSE
+            - **`.xbps`**: Void Linux
+            - **`.tar.gz`**: Standalone binary and assets for any Linux distribution
