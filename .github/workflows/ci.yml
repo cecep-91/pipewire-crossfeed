@@ -46,7 +46,7 @@ jobs:
       - name: Build and package XBPS in Void Linux container
         run: |
           docker run --rm -v "$PWD:/work" -w /work ghcr.io/void-linux/void-glibc:latest sh -c "
-            xbps-install -Suy -y base-devel pipewire-devel pulseaudio-devel alsa-lib-devel gtk+3-devel libayatana-appindicator-devel &&
+            xbps-install -Suy -y bash base-devel pipewire-devel pulseaudio-devel alsa-lib-devel gtk+3-devel libayatana-appindicator-devel &&
             make clean &&
             make -j\$(nproc) &&
             make xbps

@@ -52,16 +52,16 @@ bench: $(TARGET)
 	./$(TARGET) bench
 
 deb: $(TARGET)
-	./scripts/package.sh deb
+	bash ./scripts/package.sh deb
 
 rpm: $(TARGET)
-	./scripts/package.sh rpm
+	bash ./scripts/package.sh rpm
 
 xbps: $(TARGET)
-	./scripts/package.sh xbps
+	bash ./scripts/package.sh xbps
 
 pkg: $(TARGET)
-	./scripts/package.sh all
+	bash ./scripts/package.sh all
 
 clean:
 	rm -f $(OBJS) $(TARGET)
