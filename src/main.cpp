@@ -22,6 +22,42 @@ static void sig_handler(int /*signo*/) {
     }
 }
 
+static bool parse_cli_float(const std::string& opt_name, const char* str_val, float& out_val) {
+    try {
+        size_t idx = 0;
+        out_val = std::stof(str_val, &idx);
+        if (idx != std::string(str_val).length()) {
+            std::cerr << "[crossfeed] Error: Invalid numeric value for " << opt_name << ": '" << str_val << "'\n";
+            return false;
+        }
+        return true;
+    } catch (const std::exception&) {
+        std::cerr << "[crossfeed] Error: Invalid numeric value for " << opt_name << ": '" << str_val << "'\n";
+        return false;
+    }
+}
+
+static bool parse_cli_uint(const std::string& opt_name, const char* str_val, uint32_t& out_val) {
+    try {
+        size_t idx = 0;
+        std::string s(str_val);
+        if (s.find('-') != std::string::npos) {
+            std::cerr << "[crossfeed] Error: Invalid integer value for " << opt_name << ": '" << str_val << "'\n";
+            return false;
+        }
+        unsigned long v = std::stoul(str_val, &idx);
+        if (idx != s.length() || v > 0xFFFFFFFFUL) {
+            std::cerr << "[crossfeed] Error: Invalid integer value for " << opt_name << ": '" << str_val << "'\n";
+            return false;
+        }
+        out_val = static_cast<uint32_t>(v);
+        return true;
+    } catch (const std::exception&) {
+        std::cerr << "[crossfeed] Error: Invalid integer value for " << opt_name << ": '" << str_val << "'\n";
+        return false;
+    }
+}
+
 static void print_help(const char* prog) {
     std::cout << "Usage: " << prog << " [command] [options]\n\n"
               << "A standalone, ultra-low-latency headphone crossfeed audio processor\n"
@@ -75,32 +111,92 @@ static int cmd_run(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--backend" && i + 1 < argc) {
+        if (arg == "--backend") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
             config.backend = argv[++i];
-        } else if (arg == "--target" && i + 1 < argc) {
+        } else if (arg == "--target") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
             config.target_sink = argv[++i];
-        } else if (arg == "--level" && i + 1 < argc) {
-            config.level_db = std::stof(argv[++i]);
-        } else if (arg == "--freq" && i + 1 < argc) {
-            config.freq_hz = std::stof(argv[++i]);
-        } else if (arg == "--delay" && i + 1 < argc) {
-            config.delay_us = std::stof(argv[++i]);
-        } else if (arg == "--phase" && i + 1 < argc) {
-            config.phase_apf_hz = std::stof(argv[++i]);
-        } else if (arg == "--trim" && i + 1 < argc) {
-            config.center_trim_db = std::stof(argv[++i]);
-        } else if (arg == "--shadow" && i + 1 < argc) {
-            config.shadow_hz = std::stof(argv[++i]);
-        } else if (arg == "--advanced" && i + 1 < argc) {
+        } else if (arg == "--level") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            if (!parse_cli_float(arg, argv[++i], config.level_db)) {
+                return 1;
+            }
+        } else if (arg == "--freq") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            if (!parse_cli_float(arg, argv[++i], config.freq_hz)) {
+                return 1;
+            }
+        } else if (arg == "--delay") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            if (!parse_cli_float(arg, argv[++i], config.delay_us)) {
+                return 1;
+            }
+        } else if (arg == "--phase") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            if (!parse_cli_float(arg, argv[++i], config.phase_apf_hz)) {
+                return 1;
+            }
+        } else if (arg == "--trim") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            if (!parse_cli_float(arg, argv[++i], config.center_trim_db)) {
+                return 1;
+            }
+        } else if (arg == "--shadow") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            if (!parse_cli_float(arg, argv[++i], config.shadow_hz)) {
+                return 1;
+            }
+        } else if (arg == "--advanced") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
             config.advanced_effects = (std::string(argv[++i]) == "1");
         } else if (arg == "--pure") {
             config.advanced_effects = false;
         } else if (arg == "--effects") {
             config.advanced_effects = true;
-        } else if (arg == "--rate" && i + 1 < argc) {
-            config.sample_rate = std::stoul(argv[++i]);
-        } else if (arg == "--buffer" && i + 1 < argc) {
-            config.buffer_frames = std::stoul(argv[++i]);
+        } else if (arg == "--rate") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            if (!parse_cli_uint(arg, argv[++i], config.sample_rate)) {
+                return 1;
+            }
+        } else if (arg == "--buffer") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            if (!parse_cli_uint(arg, argv[++i], config.buffer_frames)) {
+                return 1;
+            }
         } else if (arg == "--bypass") {
             config.enabled = false;
         } else if (arg == "--enabled") {
@@ -322,26 +418,80 @@ static int cmd_set(int argc, char** argv) {
     std::string cmd = "SET";
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--level" && i + 1 < argc) {
-            cmd += " level=" + std::string(argv[++i]);
-        } else if (arg == "--freq" && i + 1 < argc) {
-            cmd += " freq=" + std::string(argv[++i]);
-        } else if (arg == "--delay" && i + 1 < argc) {
-            cmd += " delay=" + std::string(argv[++i]);
-        } else if (arg == "--phase" && i + 1 < argc) {
-            cmd += " phase=" + std::string(argv[++i]);
-        } else if (arg == "--trim" && i + 1 < argc) {
-            cmd += " trim=" + std::string(argv[++i]);
-        } else if (arg == "--shadow" && i + 1 < argc) {
-            cmd += " shadow=" + std::string(argv[++i]);
-        } else if (arg == "--advanced" && i + 1 < argc) {
-            cmd += " advanced=" + std::string(argv[++i]);
+        if (arg == "--level") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            float val;
+            if (!parse_cli_float(arg, argv[++i], val)) return 1;
+            cmd += " level=" + std::string(argv[i]);
+        } else if (arg == "--freq") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            float val;
+            if (!parse_cli_float(arg, argv[++i], val)) return 1;
+            cmd += " freq=" + std::string(argv[i]);
+        } else if (arg == "--delay") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            float val;
+            if (!parse_cli_float(arg, argv[++i], val)) return 1;
+            cmd += " delay=" + std::string(argv[i]);
+        } else if (arg == "--phase") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            float val;
+            if (!parse_cli_float(arg, argv[++i], val)) return 1;
+            cmd += " phase=" + std::string(argv[i]);
+        } else if (arg == "--trim") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            float val;
+            if (!parse_cli_float(arg, argv[++i], val)) return 1;
+            cmd += " trim=" + std::string(argv[i]);
+        } else if (arg == "--shadow") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            float val;
+            if (!parse_cli_float(arg, argv[++i], val)) return 1;
+            cmd += " shadow=" + std::string(argv[i]);
+        } else if (arg == "--advanced") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            std::string val = argv[++i];
+            if (val != "0" && val != "1") {
+                std::cerr << "[crossfeed] Error: Invalid boolean value for " << arg << ": '" << val << "' (expected 0 or 1)\n";
+                return 1;
+            }
+            cmd += " advanced=" + val;
         } else if (arg == "--pure") {
             cmd += " pure=1";
         } else if (arg == "--effects") {
             cmd += " advanced=1";
-        } else if (arg == "--enabled" && i + 1 < argc) {
-            cmd += " enabled=" + std::string(argv[++i]);
+        } else if (arg == "--enabled") {
+            if (i + 1 >= argc) {
+                std::cerr << "[crossfeed] Error: Option " << arg << " requires an argument.\n";
+                return 1;
+            }
+            std::string val = argv[++i];
+            if (val != "0" && val != "1") {
+                std::cerr << "[crossfeed] Error: Invalid boolean value for " << arg << ": '" << val << "' (expected 0 or 1)\n";
+                return 1;
+            }
+            cmd += " enabled=" + val;
         }
     }
     if (cmd == "SET") {
