@@ -161,10 +161,13 @@ public:
     static void compute_allpass(BiquadCoeffs& out, float sample_rate, float freq, float q);
 
 private:
-    void recompute_coeffs_locked();
+    static void recompute_coeffs(FilterParams& params);
+    void reset_internal() noexcept;
 
-    mutable std::mutex params_mutex_;
-    FilterParams params_;
+    FilterParams param_buffers_[2];
+    std::atomic<size_t> active_read_idx_{0};
+    mutable std::mutex write_mutex_; // Only writers lock write_mutex_, audio thread NEVER locks!
+    std::atomic<bool> reset_requested_{false};
 
     // DSP state (accessed only by audio thread)
     Biquad dir_l_;

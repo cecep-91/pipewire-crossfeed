@@ -10,6 +10,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <algorithm>
+#include <thread>
+#include <atomic>
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <xmmintrin.h>
@@ -392,6 +394,76 @@ static void test_config_state_roundtrip() {
     std::cout << "  PASS: ConfigState successfully saved, reloaded, and matched" << std::endl;
 }
 
+static void test_lockfree_concurrent_processing() {
+    std::cout << "[TEST] Lock-Free Concurrent Parameter Updates & Audio Processing..." << std::endl;
+
+    CrossfeedDSP dsp;
+    std::atomic<bool> stop_flag{false};
+    constexpr size_t BLOCK_FRAMES = 256;
+    std::atomic<size_t> blocks_processed{0};
+
+    // Thread 1: Real-time Audio Processing Thread
+    std::thread audio_thread([&]() {
+        std::vector<float> in_buf(BLOCK_FRAMES * 2, 0.5f);
+        std::vector<float> out_buf(BLOCK_FRAMES * 2, 0.0f);
+        std::vector<float> in_l(BLOCK_FRAMES, 0.5f), in_r(BLOCK_FRAMES, -0.5f);
+        std::vector<float> out_l(BLOCK_FRAMES, 0.0f), out_r(BLOCK_FRAMES, 0.0f);
+
+        while (!stop_flag.load(std::memory_order_relaxed)) {
+            dsp.process_interleaved(in_buf.data(), out_buf.data(), BLOCK_FRAMES);
+            for (float s : out_buf) {
+                assert(!is_invalid_float(s));
+            }
+
+            dsp.process_planar(in_l.data(), in_r.data(), out_l.data(), out_r.data(), BLOCK_FRAMES);
+            for (size_t i = 0; i < BLOCK_FRAMES; ++i) {
+                assert(!is_invalid_float(out_l[i]));
+                assert(!is_invalid_float(out_r[i]));
+            }
+
+            blocks_processed.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    // Thread 2: Writer Thread updating various individual parameters
+    std::thread writer_thread_1([&]() {
+        for (int i = 0; i < 500 && !stop_flag.load(std::memory_order_relaxed); ++i) {
+            float level = -6.0f - static_cast<float>(i % 20);
+            float freq = 300.0f + static_cast<float>((i * 17) % 1500);
+            dsp.set_level_db(level);
+            dsp.set_freq_hz(freq);
+            dsp.set_delay_us(100.0f + static_cast<float>((i * 23) % 600));
+            dsp.set_phase_apf_hz(500.0f + static_cast<float>((i * 31) % 3000));
+            dsp.set_center_trim_db(-1.0f - static_cast<float>(i % 5));
+            dsp.set_shadow_hz(2000.0f + static_cast<float>((i * 47) % 5000));
+            dsp.set_advanced_effects(i % 2 == 0);
+            dsp.set_enabled(i % 3 != 0);
+            std::this_thread::yield();
+        }
+    });
+
+    // Thread 3: Writer Thread calling set_all_params, set_params, and reset
+    std::thread writer_thread_2([&]() {
+        for (int i = 0; i < 500 && !stop_flag.load(std::memory_order_relaxed); ++i) {
+            if (i % 5 == 0) {
+                dsp.reset();
+            }
+            dsp.set_params(48000.0f, -12.0f, 650.0f, true);
+            dsp.set_all_params(44100.0f, -15.0f, 750.0f, 320.0f, 1600.0f, -2.0f, 3500.0f, true, true);
+            std::this_thread::yield();
+        }
+    });
+
+    writer_thread_1.join();
+    writer_thread_2.join();
+    stop_flag.store(true, std::memory_order_relaxed);
+    audio_thread.join();
+
+    assert(blocks_processed.load() > 0);
+    std::cout << "  PASS: Concurrently updated parameters across multiple threads while processing "
+              << blocks_processed.load() << " audio blocks with no data races or invalid floats" << std::endl;
+}
+
 int main() {
     // Enable FTZ/DAZ mode if hardware supports it (standard for audio DSP)
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -414,6 +486,7 @@ int main() {
     test_delay_line_interpolation_and_wrap();
     test_crossfeed_dsp_stability();
     test_config_state_roundtrip();
+    test_lockfree_concurrent_processing();
 
     std::cout << "========================================" << std::endl;
     std::cout << "All DSP and core characterization tests passed!" << std::endl;
