@@ -6,8 +6,32 @@
 #include <chrono>
 #include <unistd.h>
 #include <map>
+#include <cctype>
 
 namespace crossfeed {
+
+bool is_valid_port_name(const std::string& name) {
+    if (name.empty() || name.length() > 256) return false;
+    for (char c : name) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) &&
+            c != '_' && c != '-' && c != '.' && c != ':' && c != ' ') {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool PipeWireBackend::safe_pw_link(const std::string& src, const std::string& dst, bool disconnect) {
+    if (!is_valid_port_name(src) || !is_valid_port_name(dst)) {
+        return false;
+    }
+    std::string cmd = "pw-link ";
+    if (disconnect) {
+        cmd += "-d ";
+    }
+    cmd += "\"" + src + "\" \"" + dst + "\" 2>/dev/null";
+    return system(cmd.c_str()) == 0;
+}
 
 static void on_filter_process(void *userdata, struct spa_io_position *position) {
     auto *backend = static_cast<PipeWireBackend*>(userdata);
@@ -41,7 +65,7 @@ std::string PipeWireBackend::resolve_default_sink() {
             pclose(fp);
             std::string s(buf);
             while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
-            if (!s.empty()) return s;
+            if (!s.empty() && is_valid_port_name(s)) return s;
         } else {
             pclose(fp);
         }
@@ -55,7 +79,7 @@ std::string PipeWireBackend::resolve_default_sink() {
             pclose(fp);
             std::string s(buf);
             while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
-            return s;
+            if (!s.empty() && is_valid_port_name(s)) return s;
         }
         pclose(fp);
     }
@@ -71,7 +95,7 @@ std::vector<SinkDevice> PipeWireBackend::list_sinks() {
     while (fgets(buf, sizeof(buf), fp)) {
         std::string s(buf);
         while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
-        if (!s.empty()) {
+        if (!s.empty() && is_valid_port_name(s)) {
             SinkDevice dev;
             dev.name = s;
             dev.description = s;
@@ -90,12 +114,16 @@ bool PipeWireBackend::init(CrossfeedDSP* dsp, const std::string& target_sink, ui
     requested_target_ = target_sink;
 
     if (!requested_target_.empty() && requested_target_ != "auto") {
+        if (!is_valid_port_name(requested_target_)) {
+            std::cerr << "[crossfeed] Error: Invalid target sink name: " << requested_target_ << std::endl;
+            return false;
+        }
         active_target_sink_ = requested_target_;
     } else {
         active_target_sink_ = resolve_default_sink();
     }
 
-    if (active_target_sink_.empty()) {
+    if (active_target_sink_.empty() || !is_valid_port_name(active_target_sink_)) {
         std::cerr << "[crossfeed] Error: Could not determine active output device." << std::endl;
         return false;
     }
@@ -213,9 +241,8 @@ void PipeWireBackend::link_manager_loop() {
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
     // Ensure crossfeed-dsp output is connected to target playback sink
-    std::string connect_out_cmd = "pw-link crossfeed-dsp:out_FL " + target_playback_fl_ + " 2>/dev/null; "
-                                + "pw-link crossfeed-dsp:out_FR " + target_playback_fr_ + " 2>/dev/null";
-    system(connect_out_cmd.c_str());
+    safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_);
+    safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_);
 
     struct PortLinks {
         std::vector<std::string> inputs;
@@ -226,14 +253,13 @@ void PipeWireBackend::link_manager_loop() {
         // Dynamically follow default output device if requested target is auto
         if (requested_target_.empty() || requested_target_ == "auto") {
             std::string cur_def = resolve_default_sink();
-            if (!cur_def.empty() && cur_def != active_target_sink_) {
+            if (!cur_def.empty() && is_valid_port_name(cur_def) && cur_def != active_target_sink_) {
                 restore_all_links();
                 active_target_sink_ = cur_def;
                 target_playback_fl_ = active_target_sink_ + ":playback_FL";
                 target_playback_fr_ = active_target_sink_ + ":playback_FR";
-                connect_out_cmd = "pw-link crossfeed-dsp:out_FL " + target_playback_fl_ + " 2>/dev/null; "
-                                + "pw-link crossfeed-dsp:out_FR " + target_playback_fr_ + " 2>/dev/null";
-                system(connect_out_cmd.c_str());
+                safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_);
+                safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_);
             }
         }
 
@@ -254,7 +280,7 @@ void PipeWireBackend::link_manager_loop() {
                     std::string target = l.substr(pos + 3);
                     while (!target.empty() && target.front() == ' ') target.erase(target.begin());
                     while (!target.empty() && target.back() == ' ') target.pop_back();
-                    if (!current_port.empty() && !target.empty()) {
+                    if (!current_port.empty() && !target.empty() && is_valid_port_name(target)) {
                         graph[current_port].inputs.push_back(target);
                     }
                 } else if (l.find("|->") != std::string::npos) {
@@ -262,7 +288,7 @@ void PipeWireBackend::link_manager_loop() {
                     std::string target = l.substr(pos + 3);
                     while (!target.empty() && target.front() == ' ') target.erase(target.begin());
                     while (!target.empty() && target.back() == ' ') target.pop_back();
-                    if (!current_port.empty() && !target.empty()) {
+                    if (!current_port.empty() && !target.empty() && is_valid_port_name(target)) {
                         graph[current_port].outputs.push_back(target);
                     }
                 } else if (l[0] != ' ' && l[0] != '\t' && l[0] != '|') {
@@ -289,17 +315,41 @@ void PipeWireBackend::link_manager_loop() {
         }
 
         for (const auto& src_l : to_intercept_fl) {
-            std::string link_cmd = "pw-link " + src_l + " crossfeed-dsp:in_FL 2>/dev/null; "
-                                 + "pw-link -d " + src_l + " " + target_playback_fl_ + " 2>/dev/null";
-            system(link_cmd.c_str());
+            if (!is_valid_port_name(src_l)) continue;
+            bool already_linked = false;
+            auto in_fl_it = graph.find("crossfeed-dsp:in_FL");
+            if (in_fl_it != graph.end()) {
+                for (const auto& in_src : in_fl_it->second.inputs) {
+                    if (in_src == src_l) {
+                        already_linked = true;
+                        break;
+                    }
+                }
+            }
+            if (!already_linked) {
+                safe_pw_link(src_l, "crossfeed-dsp:in_FL");
+            }
+            safe_pw_link(src_l, target_playback_fl_, true);
             std::lock_guard<std::mutex> lock(intercepted_mutex_);
             intercepted_ports_fl_.insert(src_l);
         }
 
         for (const auto& src_r : to_intercept_fr) {
-            std::string link_cmd = "pw-link " + src_r + " crossfeed-dsp:in_FR 2>/dev/null; "
-                                 + "pw-link -d " + src_r + " " + target_playback_fr_ + " 2>/dev/null";
-            system(link_cmd.c_str());
+            if (!is_valid_port_name(src_r)) continue;
+            bool already_linked = false;
+            auto in_fr_it = graph.find("crossfeed-dsp:in_FR");
+            if (in_fr_it != graph.end()) {
+                for (const auto& in_src : in_fr_it->second.inputs) {
+                    if (in_src == src_r) {
+                        already_linked = true;
+                        break;
+                    }
+                }
+            }
+            if (!already_linked) {
+                safe_pw_link(src_r, "crossfeed-dsp:in_FR");
+            }
+            safe_pw_link(src_r, target_playback_fr_, true);
             std::lock_guard<std::mutex> lock(intercepted_mutex_);
             intercepted_ports_fr_.insert(src_r);
         }
@@ -323,8 +373,8 @@ void PipeWireBackend::link_manager_loop() {
         }
 
         for (const auto& stale : stale_fl) {
-            std::string unlink_cmd = "pw-link -d " + stale + " crossfeed-dsp:in_FL 2>/dev/null";
-            system(unlink_cmd.c_str());
+            if (!is_valid_port_name(stale)) continue;
+            safe_pw_link(stale, "crossfeed-dsp:in_FL", true);
             std::lock_guard<std::mutex> lock(intercepted_mutex_);
             intercepted_ports_fl_.erase(stale);
         }
@@ -344,17 +394,65 @@ void PipeWireBackend::link_manager_loop() {
         }
 
         for (const auto& stale : stale_fr) {
-            std::string unlink_cmd = "pw-link -d " + stale + " crossfeed-dsp:in_FR 2>/dev/null";
-            system(unlink_cmd.c_str());
+            if (!is_valid_port_name(stale)) continue;
+            safe_pw_link(stale, "crossfeed-dsp:in_FR", true);
             std::lock_guard<std::mutex> lock(intercepted_mutex_);
             intercepted_ports_fr_.erase(stale);
         }
 
-        // Ensure crossfeed-dsp output remains connected to physical sink
-        system(connect_out_cmd.c_str());
+        // Ensure crossfeed-dsp output remains connected to physical sink if missing from graph
+        bool out_fl_linked = false;
+        auto out_fl_it = graph.find("crossfeed-dsp:out_FL");
+        if (out_fl_it != graph.end()) {
+            for (const auto& dst : out_fl_it->second.outputs) {
+                if (dst == target_playback_fl_) {
+                    out_fl_linked = true;
+                    break;
+                }
+            }
+        }
+        if (!out_fl_linked) {
+            auto tgt_fl_it = graph.find(target_playback_fl_);
+            if (tgt_fl_it != graph.end()) {
+                for (const auto& src : tgt_fl_it->second.inputs) {
+                    if (src == "crossfeed-dsp:out_FL") {
+                        out_fl_linked = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!out_fl_linked) {
+            safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_);
+        }
 
-        // Check every 100ms
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        bool out_fr_linked = false;
+        auto out_fr_it = graph.find("crossfeed-dsp:out_FR");
+        if (out_fr_it != graph.end()) {
+            for (const auto& dst : out_fr_it->second.outputs) {
+                if (dst == target_playback_fr_) {
+                    out_fr_linked = true;
+                    break;
+                }
+            }
+        }
+        if (!out_fr_linked) {
+            auto tgt_fr_it = graph.find(target_playback_fr_);
+            if (tgt_fr_it != graph.end()) {
+                for (const auto& src : tgt_fr_it->second.inputs) {
+                    if (src == "crossfeed-dsp:out_FR") {
+                        out_fr_linked = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!out_fr_linked) {
+            safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_);
+        }
+
+        // Check every 250ms (reduced idle CPU overhead)
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 }
 
@@ -376,7 +474,7 @@ void PipeWireBackend::restore_all_links() {
                 std::string target = l.substr(pos + 3);
                 while (!target.empty() && target.front() == ' ') target.erase(target.begin());
                 while (!target.empty() && target.back() == ' ') target.pop_back();
-                if (!cur.empty() && !target.empty()) outputs_map[cur].push_back(target);
+                if (!cur.empty() && !target.empty() && is_valid_port_name(target)) outputs_map[cur].push_back(target);
             } else if (!l.empty() && l[0] != ' ' && l[0] != '\t' && l[0] != '|') {
                 cur = l;
                 while (!cur.empty() && cur.back() == ' ') cur.pop_back();
@@ -386,6 +484,7 @@ void PipeWireBackend::restore_all_links() {
     }
 
     for (const auto& src_l : intercepted_ports_fl_) {
+        if (!is_valid_port_name(src_l)) continue;
         bool routed_elsewhere = false;
         for (const auto& dst : outputs_map[src_l]) {
             if (dst != "crossfeed-dsp:in_FL") {
@@ -393,16 +492,15 @@ void PipeWireBackend::restore_all_links() {
                 break;
             }
         }
-        std::string cmd;
         if (!routed_elsewhere) {
-            cmd = "pw-link " + src_l + " " + target_playback_fl_ + " 2>/dev/null; ";
+            safe_pw_link(src_l, target_playback_fl_);
         }
-        cmd += "pw-link -d " + src_l + " crossfeed-dsp:in_FL 2>/dev/null";
-        system(cmd.c_str());
+        safe_pw_link(src_l, "crossfeed-dsp:in_FL", true);
     }
     intercepted_ports_fl_.clear();
 
     for (const auto& src_r : intercepted_ports_fr_) {
+        if (!is_valid_port_name(src_r)) continue;
         bool routed_elsewhere = false;
         for (const auto& dst : outputs_map[src_r]) {
             if (dst != "crossfeed-dsp:in_FR") {
@@ -410,18 +508,15 @@ void PipeWireBackend::restore_all_links() {
                 break;
             }
         }
-        std::string cmd;
         if (!routed_elsewhere) {
-            cmd = "pw-link " + src_r + " " + target_playback_fr_ + " 2>/dev/null; ";
+            safe_pw_link(src_r, target_playback_fr_);
         }
-        cmd += "pw-link -d " + src_r + " crossfeed-dsp:in_FR 2>/dev/null";
-        system(cmd.c_str());
+        safe_pw_link(src_r, "crossfeed-dsp:in_FR", true);
     }
     intercepted_ports_fr_.clear();
 
-    std::string disconnect_out = "pw-link -d crossfeed-dsp:out_FL " + target_playback_fl_ + " 2>/dev/null; "
-                               + "pw-link -d crossfeed-dsp:out_FR " + target_playback_fr_ + " 2>/dev/null";
-    system(disconnect_out.c_str());
+    safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_, true);
+    safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_, true);
 }
 
 bool PipeWireBackend::run() {

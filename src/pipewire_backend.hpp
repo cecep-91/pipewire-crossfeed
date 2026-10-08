@@ -12,6 +12,8 @@
 
 namespace crossfeed {
 
+bool is_valid_port_name(const std::string& name);
+
 struct InterceptedStream {
     std::string out_l;
     std::string out_r;
@@ -38,6 +40,7 @@ public:
     void process_audio(struct spa_io_position *position);
 
 private:
+    static bool safe_pw_link(const std::string& src, const std::string& dst, bool disconnect = false);
     std::string resolve_default_sink();
     void link_manager_loop();
     void restore_all_links();
