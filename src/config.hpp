@@ -9,6 +9,10 @@ struct ConfigState {
     bool enabled = true;
     float level_db = -10.0f;
     float freq_hz = 700.0f;
+    float delay_us = 280.0f;
+    float phase_apf_hz = 1500.0f;
+    float center_trim_db = -1.5f;
+    float shadow_hz = 3000.0f;
     std::string backend = "auto";
     std::string target_sink = "auto";
     uint32_t sample_rate = 48000;

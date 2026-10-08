@@ -93,6 +93,26 @@ bool Config::load_state(ConfigState& state) {
         try { state.freq_hz = std::stof(val); } catch (...) {}
     }
 
+    val = extract_val("delay_us");
+    if (!val.empty()) {
+        try { state.delay_us = std::stof(val); } catch (...) {}
+    }
+
+    val = extract_val("phase_apf_hz");
+    if (!val.empty()) {
+        try { state.phase_apf_hz = std::stof(val); } catch (...) {}
+    }
+
+    val = extract_val("center_trim_db");
+    if (!val.empty()) {
+        try { state.center_trim_db = std::stof(val); } catch (...) {}
+    }
+
+    val = extract_val("shadow_hz");
+    if (!val.empty()) {
+        try { state.shadow_hz = std::stof(val); } catch (...) {}
+    }
+
     val = extract_val("backend");
     if (!val.empty()) {
         state.backend = val;
@@ -130,6 +150,10 @@ bool Config::save_state(const ConfigState& state) {
          << "  \"enabled\": " << (state.enabled ? "true" : "false") << ",\n"
          << "  \"level_db\": " << state.level_db << ",\n"
          << "  \"freq_hz\": " << state.freq_hz << ",\n"
+         << "  \"delay_us\": " << state.delay_us << ",\n"
+         << "  \"phase_apf_hz\": " << state.phase_apf_hz << ",\n"
+         << "  \"center_trim_db\": " << state.center_trim_db << ",\n"
+         << "  \"shadow_hz\": " << state.shadow_hz << ",\n"
          << "  \"backend\": \"" << state.backend << "\",\n"
          << "  \"target_sink\": \"" << state.target_sink << "\",\n"
          << "  \"sample_rate\": " << state.sample_rate << ",\n"

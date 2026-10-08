@@ -45,12 +45,20 @@ static void print_help(const char* prog) {
               << "  --target <sink>   Target output sink (default: auto non-crossfeed sink)\n"
               << "  --level <dB>      Crossfeed blend level in dB (-30.0 to -6.0, default: -10.0)\n"
               << "  --freq <Hz>       Crossover frequency in Hz (200 to 2000, default: 700)\n"
+              << "  --delay <us>      Acoustic delay in microseconds (0 to 800, default: 280)\n"
+              << "  --phase <Hz>      Phase alignment all-pass frequency (200 to 4000, default: 1500)\n"
+              << "  --trim <dB>       Center summing gain trim in dB (-6.0 to 0.0, default: -1.5)\n"
+              << "  --shadow <Hz>     Head acoustic shadow cutoff in Hz (1000 to 8000, default: 3000)\n"
               << "  --rate <Hz>       Sample rate (default: 48000)\n"
               << "  --buffer <frames> Buffer size (default: 256)\n"
               << "  --bypass          Start in bypassed state\n\n"
               << "Set Options:\n"
               << "  --level <dB>      Set blend level in dB\n"
               << "  --freq <Hz>       Set crossover frequency in Hz\n"
+              << "  --delay <us>      Set acoustic delay in microseconds\n"
+              << "  --phase <Hz>      Set phase alignment all-pass frequency in Hz\n"
+              << "  --trim <dB>       Set center summing gain trim in dB\n"
+              << "  --shadow <Hz>     Set head shadow cutoff in Hz\n"
               << "  --enabled <0|1>   Set filter active (1) or bypassed (0)\n\n"
               << "Status Options:\n"
               << "  --json            Output status in JSON format\n";
@@ -70,6 +78,14 @@ static int cmd_run(int argc, char** argv) {
             config.level_db = std::stof(argv[++i]);
         } else if (arg == "--freq" && i + 1 < argc) {
             config.freq_hz = std::stof(argv[++i]);
+        } else if (arg == "--delay" && i + 1 < argc) {
+            config.delay_us = std::stof(argv[++i]);
+        } else if (arg == "--phase" && i + 1 < argc) {
+            config.phase_apf_hz = std::stof(argv[++i]);
+        } else if (arg == "--trim" && i + 1 < argc) {
+            config.center_trim_db = std::stof(argv[++i]);
+        } else if (arg == "--shadow" && i + 1 < argc) {
+            config.shadow_hz = std::stof(argv[++i]);
         } else if (arg == "--rate" && i + 1 < argc) {
             config.sample_rate = std::stoul(argv[++i]);
         } else if (arg == "--buffer" && i + 1 < argc) {
@@ -86,10 +102,16 @@ static int cmd_run(int argc, char** argv) {
               << "  Target: " << config.target_sink << "\n"
               << "  Level: " << config.level_db << " dB\n"
               << "  Freq: " << config.freq_hz << " Hz\n"
+              << "  Delay: " << config.delay_us << " µs\n"
+              << "  Phase APF: " << config.phase_apf_hz << " Hz\n"
+              << "  Center Trim: " << config.center_trim_db << " dB\n"
+              << "  Head Shadow: " << config.shadow_hz << " Hz\n"
               << "  Filter: " << (config.enabled ? "ENABLED" : "BYPASSED") << "\n";
 
     CrossfeedDSP dsp;
-    dsp.set_params(static_cast<float>(config.sample_rate), config.level_db, config.freq_hz, config.enabled);
+    dsp.set_all_params(static_cast<float>(config.sample_rate), config.level_db, config.freq_hz,
+                       config.delay_us, config.phase_apf_hz, config.center_trim_db, config.shadow_hz,
+                       config.enabled);
 
     auto backend = create_backend(config.backend);
     if (!backend) {
@@ -234,19 +256,27 @@ static int cmd_status(bool json_output) {
     std::string en = get_field("enabled");
     std::string lvl = get_field("level_db");
     std::string frq = get_field("freq_hz");
+    std::string del = get_field("delay_us");
+    std::string phs = get_field("phase_apf_hz");
+    std::string trm = get_field("center_trim_db");
+    std::string shd = get_field("shadow_hz");
     std::string bk = get_field("backend");
     std::string tgt = get_field("target");
     std::string sr = get_field("sample_rate");
     std::string buf = get_field("buffer_frames");
 
-    std::cout << "  State:        " << (st == "running" ? "● Running" : "○ Stopped") << "\n"
-              << "  Filter:       " << (en == "true" ? "ON (Processing active)" : "OFF (Bypassed)") << "\n"
-              << "  Blend Level:  " << lvl << " dB\n"
-              << "  Crossover:    " << frq << " Hz\n"
-              << "  Backend:      " << bk << "\n"
-              << "  Output Sink:  " << tgt << "\n"
-              << "  Sample Rate:  " << sr << " Hz\n"
-              << "  Buffer Size:  " << buf << " frames\n"
+    std::cout << "  State:          " << (st == "running" ? "● Running" : "○ Stopped") << "\n"
+              << "  Filter:         " << (en == "true" ? "ON (Processing active)" : "OFF (Bypassed)") << "\n"
+              << "  Blend Level:    " << lvl << " dB\n"
+              << "  Crossover:      " << frq << " Hz\n"
+              << "  Delay (ITD):    " << (del.empty() ? "280" : del) << " µs\n"
+              << "  Phase All-Pass: " << (phs.empty() ? "1500" : phs) << " Hz\n"
+              << "  Center Trim:    " << (trm.empty() ? "-1.5" : trm) << " dB\n"
+              << "  Head Shadow:    " << (shd.empty() ? "3000" : shd) << " Hz\n"
+              << "  Backend:        " << bk << "\n"
+              << "  Output Sink:    " << tgt << "\n"
+              << "  Sample Rate:    " << sr << " Hz\n"
+              << "  Buffer Size:    " << buf << " frames\n"
               << "========================================\n";
     return 0;
 }
@@ -282,12 +312,20 @@ static int cmd_set(int argc, char** argv) {
             cmd += " level=" + std::string(argv[++i]);
         } else if (arg == "--freq" && i + 1 < argc) {
             cmd += " freq=" + std::string(argv[++i]);
+        } else if (arg == "--delay" && i + 1 < argc) {
+            cmd += " delay=" + std::string(argv[++i]);
+        } else if (arg == "--phase" && i + 1 < argc) {
+            cmd += " phase=" + std::string(argv[++i]);
+        } else if (arg == "--trim" && i + 1 < argc) {
+            cmd += " trim=" + std::string(argv[++i]);
+        } else if (arg == "--shadow" && i + 1 < argc) {
+            cmd += " shadow=" + std::string(argv[++i]);
         } else if (arg == "--enabled" && i + 1 < argc) {
             cmd += " enabled=" + std::string(argv[++i]);
         }
     }
     if (cmd == "SET") {
-        std::cerr << "Usage: crossfeed set [--level <dB>] [--freq <Hz>] [--enabled <0|1>]\n";
+        std::cerr << "Usage: crossfeed set [--level <dB>] [--freq <Hz>] [--delay <us>] [--phase <Hz>] [--trim <dB>] [--shadow <Hz>] [--enabled <0|1>]\n";
         return 1;
     }
 
@@ -333,7 +371,7 @@ int main(int argc, char** argv) {
         run_benchmark();
         return 0;
     } else if (cmd == "--version" || cmd == "-v") {
-        std::cout << "pipewire-crossfeed 2.0.0 (standalone)\n";
+        std::cout << "pipewire-crossfeed 2.1.0 (standalone)\n";
         return 0;
     } else if (cmd == "help" || cmd == "--help" || cmd == "-h") {
         print_help(argv[0]);
