@@ -74,6 +74,7 @@ build_xbps() {
                 -l "MIT" \
                 -m "crossfeed maintainers" \
                 -H "https://github.com/ikuu/pipewire-crossfeed" \
+                -D "libpipewire>=0.3.0 libpulseaudio>=15.0 alsa-lib>=1.2.0 gtk+3>=3.24.0 libayatana-appindicator>=0.5.0" \
                 "$build_dir"
 
     mv "$outfile" "$DIST_DIR/"
@@ -103,7 +104,7 @@ Maintainer: pipewire-crossfeed <https://github.com/ikuu/pipewire-crossfeed>
 Section: sound
 Priority: optional
 Installed-Size: $(du -sk "$build_dir/usr" | cut -f1)
-Depends: libc6, libgtk-3-0, libayatana-appindicator3-1
+Depends: libc6, libpipewire-0.3-0 | libpipewire-0.3-0t64, libpulse0, libasound2 | libasound2t64, libgtk-3-0 | libgtk-3-0t64, libayatana-appindicator3-1
 Suggests: pipewire, pulseaudio
 Description: Standalone ultra-low-latency headphone crossfeed audio processor
  High-performance crossfeed filter with native GTK3 GUI, system tray,

@@ -38,6 +38,19 @@ jobs:
           ./install.sh
           ~/.local/bin/crossfeed --version
           ./install.sh --uninstall
+      - name: Test Debian (.deb) package installation
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          /usr/bin/crossfeed --version
+          /usr/bin/crossfeed bench
+          sudo apt-get remove -y crossfeed
+      - name: Test RPM (.rpm) package in Fedora container
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work fedora:latest sh -c "
+            dnf install -y ./dist/*.rpm &&
+            crossfeed --version &&
+            crossfeed bench
+          "
 
   build-void:
     runs-on: ubuntu-latest
@@ -49,6 +62,10 @@ jobs:
             xbps-install -Suy -y bash base-devel pipewire-devel pulseaudio-devel alsa-lib-devel gtk+3-devel libayatana-appindicator-devel &&
             make clean &&
             make -j\$(nproc) &&
-            make xbps
+            make xbps &&
+            xbps-rindex -f -a dist/*.xbps &&
+            xbps-install -Suy -y -R dist crossfeed &&
+            /usr/bin/crossfeed --version &&
+            /usr/bin/crossfeed bench
           "
           ls -la dist/

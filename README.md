@@ -129,16 +129,22 @@ Packages install `/usr/bin/crossfeed`, `/usr/share/applications/crossfeed.deskto
 ### Installing Packages
 
 ```sh
-# Void Linux
+# Void Linux (.xbps)
 xbps-rindex -a dist/*.xbps
 sudo xbps-install -R dist crossfeed
 
-# Debian / Ubuntu / Linux Mint
-sudo dpkg -i dist/crossfeed_2.1.0-1_amd64.deb
+# Debian / Ubuntu / Linux Mint (.deb)
+sudo apt install ./dist/crossfeed_2.1.0-1_amd64.deb
 
-# Fedora / RHEL / openSUSE
-sudo rpm -ivh dist/crossfeed-2.1.0-1.x86_64.rpm
+# Fedora / RHEL / openSUSE (.rpm)
+sudo dnf install ./dist/crossfeed-2.1.0-1.x86_64.rpm
+
+# Fedora Silverblue / Kinoite / Bazzite / CoreOS (rpm-ostree)
+rpm-ostree install ./dist/crossfeed-2.1.0-1.x86_64.rpm
 ```
+
+> [!NOTE]
+> **rpm-ostree & Immutable OS Compatibility**: Crossfeed RPM complies 100% with OSTree standards: all files install strictly under `/usr`, with zero scriptlets (`%pre`/`%post`) and zero mutable `/etc` or `/var` writes, enabling clean atomic package layering.
 
 ---
 
@@ -150,7 +156,7 @@ sudo rpm -ivh dist/crossfeed-2.1.0-1.x86_64.rpm
 |---|---|
 | **Void Linux** | `sudo xbps-install -S base-devel pipewire-devel pulseaudio-devel alsa-lib-devel gtk+3-devel libayatana-appindicator-devel` |
 | **Ubuntu / Debian** | `sudo apt install build-essential libpipewire-0.3-dev libpulse-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev` |
-| **Fedora** | `sudo dnf install gcc-c++ make pipewire-devel pulseaudio-libs-devel alsa-lib-devel gtk3-devel libayatana-appindicator-devel` |
+| **Fedora** | `sudo dnf install gcc-c++ make pipewire-devel pulseaudio-libs-devel alsa-lib-devel gtk3-devel libayatana-appindicator-gtk3-devel` |
 | **Arch Linux** | `sudo pacman -S --needed base-devel pipewire libpulse alsa-lib gtk3 libayatana-appindicator` |
 
 ### Compile & Install
