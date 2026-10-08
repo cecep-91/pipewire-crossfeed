@@ -113,6 +113,7 @@ static std::string build_status_json(CrossfeedDSP* dsp, AudioBackend* backend) {
        << "  \"center_trim_db\": " << dsp->get_center_trim_db() << ",\n"
        << std::setprecision(0)
        << "  \"shadow_hz\": " << dsp->get_shadow_hz() << ",\n"
+       << "  \"advanced_effects\": " << (dsp->get_advanced_effects() ? "true" : "false") << ",\n"
        << "  \"backend\": \"" << (backend ? backend->get_backend_name() : "unknown") << "\",\n"
        << "  \"target\": \"" << (backend ? backend->get_active_target() : "") << "\",\n"
        << "  \"sample_rate\": " << (backend ? backend->get_sample_rate() : 48000) << ",\n"
@@ -196,6 +197,16 @@ std::string IpcServer::handle_command(const std::string& cmd) {
                         config_->shadow_hz = dsp_->get_shadow_hz();
                         changed = true;
                     } catch (...) {}
+                } else if (k == "advanced" || k == "advanced_effects" || k == "effects") {
+                    bool adv = (v == "true" || v == "1" || v == "on");
+                    dsp_->set_advanced_effects(adv);
+                    config_->advanced_effects = adv;
+                    changed = true;
+                } else if (k == "pure" || k == "pure_crossfeed") {
+                    bool adv = !(v == "true" || v == "1" || v == "on");
+                    dsp_->set_advanced_effects(adv);
+                    config_->advanced_effects = adv;
+                    changed = true;
                 }
             }
         }

@@ -107,6 +107,7 @@ struct FilterParams {
     float phase_apf_hz = DEFAULT_PHASE_APF_HZ;
     float center_trim_db = DEFAULT_CENTER_TRIM_DB;
     float shadow_hz = DEFAULT_SHADOW_HZ;
+    bool advanced_effects = true;
     bool enabled = true;
 
     BiquadCoeffs dir_coeffs;
@@ -126,7 +127,7 @@ public:
     void set_params(float sample_rate, float level_db, float freq_hz, bool enabled);
     void set_all_params(float sample_rate, float level_db, float freq_hz,
                         float delay_us, float phase_apf_hz, float center_trim_db,
-                        float shadow_hz, bool enabled);
+                        float shadow_hz, bool advanced_effects, bool enabled);
 
     void set_level_db(float level_db);
     void set_freq_hz(float freq_hz);
@@ -134,9 +135,11 @@ public:
     void set_phase_apf_hz(float phase_apf_hz);
     void set_center_trim_db(float center_trim_db);
     void set_shadow_hz(float shadow_hz);
+    void set_advanced_effects(bool enabled);
     void set_enabled(bool enabled);
 
     bool is_enabled() const;
+    bool get_advanced_effects() const;
     float get_level_db() const;
     float get_freq_hz() const;
     float get_delay_us() const;

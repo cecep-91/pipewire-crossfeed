@@ -36,6 +36,7 @@ static const CrossfeedPreset g_presets[] = {
 struct GuiEngineState {
     bool running = false;
     bool enabled = true;
+    bool advanced_effects = true;
     float level_db = DEFAULT_LEVEL_DB;
     float freq_hz = DEFAULT_FREQ_HZ;
     float delay_us = DEFAULT_DELAY_US;
@@ -56,6 +57,7 @@ public:
     GtkWidget* header_bar = nullptr;
     GtkWidget* master_switch = nullptr;
     GtkWidget* main_stack = nullptr;
+    GtkWidget* scrolled_window = nullptr;
     GtkWidget* controls_box = nullptr;
     GtkWidget* stopped_box = nullptr;
 
@@ -68,8 +70,11 @@ public:
     GtkWidget* freq_scale = nullptr;
     GtkWidget* freq_spin = nullptr;
 
-    // Advanced 'Not for me options :v' Sliders
+    // Advanced 'Not for me options :v' widgets
     GtkWidget* expander = nullptr;
+    GtkWidget* effects_switch = nullptr;
+    GtkWidget* effects_desc_label = nullptr;
+    GtkWidget* advanced_controls_box = nullptr;
     GtkWidget* preset_desc_label = nullptr;
 
     GtkAdjustment* delay_adj = nullptr;
@@ -99,6 +104,7 @@ public:
     GtkWidget* tray_menu = nullptr;
     GtkWidget* tray_status_item = nullptr;
     GtkWidget* tray_toggle_item = nullptr;
+    GtkWidget* tray_effects_item = nullptr;
     GtkWidget* tray_engine_item = nullptr;
 
     GuiEngineState state;
@@ -178,6 +184,11 @@ public:
             try { out_state.shadow_hz = std::stof(shd); } catch (...) {}
         }
 
+        std::string adv = parse_json_value(resp, "advanced_effects");
+        if (!adv.empty()) {
+            out_state.advanced_effects = (adv == "true" || adv == "1");
+        }
+
         out_state.backend = parse_json_value(resp, "backend");
         out_state.target = parse_json_value(resp, "target");
 
@@ -192,6 +203,47 @@ public:
         }
 
         return true;
+    }
+
+    static gboolean on_slider_scroll_event(GtkWidget* /*widget*/, GdkEventScroll* event, gpointer user_data) {
+        GtkScrolledWindow* scrolled = GTK_SCROLLED_WINDOW(user_data);
+        if (!scrolled) return GDK_EVENT_STOP;
+
+        GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(scrolled);
+        if (!vadj) return GDK_EVENT_STOP;
+
+        double step = gtk_adjustment_get_step_increment(vadj);
+        if (step <= 1.0) step = 28.0;
+
+        double delta = 0.0;
+        if (event->direction == GDK_SCROLL_UP) {
+            delta = -step * 2.5;
+        } else if (event->direction == GDK_SCROLL_DOWN) {
+            delta = step * 2.5;
+        } else if (event->direction == GDK_SCROLL_SMOOTH) {
+            double dx = 0.0, dy = 0.0;
+            gdk_event_get_scroll_deltas(reinterpret_cast<GdkEvent*>(event), &dx, &dy);
+            delta = dy * step * 2.5;
+        }
+
+        if (delta != 0.0) {
+            double val = gtk_adjustment_get_value(vadj) + delta;
+            double lower = gtk_adjustment_get_lower(vadj);
+            double page_size = gtk_adjustment_get_page_size(vadj);
+            double upper = gtk_adjustment_get_upper(vadj) - page_size;
+            if (upper < lower) upper = lower;
+            if (val < lower) val = lower;
+            if (val > upper) val = upper;
+            gtk_adjustment_set_value(vadj, val);
+        }
+
+        return GDK_EVENT_STOP;
+    }
+
+    static void protect_from_accidental_scroll(GtkWidget* widget, GtkWidget* scrolled_win) {
+        if (!widget || !scrolled_win) return;
+        gtk_widget_add_events(widget, GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK);
+        g_signal_connect(widget, "scroll-event", G_CALLBACK(on_slider_scroll_event), scrolled_win);
     }
 
     void start_engine() {
@@ -218,7 +270,7 @@ public:
 
     void apply_params(bool enabled, float level_db, float freq_hz,
                       float delay_us, float phase_apf_hz, float center_trim_db,
-                      float shadow_hz) {
+                      float shadow_hz, bool advanced_effects) {
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(1);
         ss << "SET enabled=" << (enabled ? "1" : "0")
@@ -232,7 +284,8 @@ public:
            << std::setprecision(1)
            << " trim=" << center_trim_db
            << std::setprecision(0)
-           << " shadow=" << shadow_hz;
+           << " shadow=" << shadow_hz
+           << " advanced=" << (advanced_effects ? "1" : "0");
         std::string resp;
         IpcClient::send_command(Config::get_socket_path(), ss.str(), resp);
         refresh_from_engine();
@@ -291,13 +344,34 @@ public:
                 gtk_adjustment_set_value(shadow_adj, state.shadow_hz);
             }
 
+            // Update mode switch & advanced widgets sensitivity
+            if (effects_switch) {
+                gtk_switch_set_active(GTK_SWITCH(effects_switch), state.advanced_effects);
+            }
+            if (advanced_controls_box) {
+                gtk_widget_set_sensitive(advanced_controls_box, state.advanced_effects);
+            }
+            if (effects_desc_label) {
+                if (state.advanced_effects) {
+                    gtk_label_set_markup(GTK_LABEL(effects_desc_label),
+                        "<span foreground='#2ecc71'><b>All Effects Active:</b></span> ITD delay, phase alignment, head shadow, &amp; trim enabled.");
+                } else {
+                    gtk_label_set_markup(GTK_LABEL(effects_desc_label),
+                        "<span foreground='#e67e22'><b>Pure Crossfeed Active:</b></span> Classic low-pass stereo blend only. Spatial effects bypassed.");
+                }
+            }
+
             gtk_widget_set_sensitive(controls_box, state.enabled);
 
             // Subtitle
             std::ostringstream sub;
             sub << std::fixed << std::setprecision(1);
             if (state.enabled) {
-                sub << state.level_db << " dB · " << std::setprecision(0) << state.freq_hz << " Hz · " << state.delay_us << " µs";
+                if (state.advanced_effects) {
+                    sub << state.level_db << " dB · " << std::setprecision(0) << state.freq_hz << " Hz · " << state.delay_us << " µs (All Effects)";
+                } else {
+                    sub << state.level_db << " dB · " << std::setprecision(0) << state.freq_hz << " Hz (Pure Crossfeed)";
+                }
                 if (!state.target.empty()) {
                     std::string tgt_short = state.target;
                     size_t last_dot = tgt_short.find_last_of('.');
@@ -350,7 +424,7 @@ public:
                 t_stat << "Crossfeed: " << (state.enabled ? "Active (" : "Bypassed (")
                        << std::fixed << std::setprecision(1) << state.level_db << " dB, "
                        << std::setprecision(0) << state.freq_hz << " Hz, "
-                       << state.delay_us << " µs)";
+                       << (state.advanced_effects ? "All Effects)" : "Pure Crossfeed)");
                 gtk_menu_item_set_label(GTK_MENU_ITEM(tray_status_item), t_stat.str().c_str());
             }
             if (tray_engine_item) {
@@ -359,6 +433,10 @@ public:
             if (tray_toggle_item) {
                 gtk_widget_set_sensitive(tray_toggle_item, TRUE);
                 gtk_menu_item_set_label(GTK_MENU_ITEM(tray_toggle_item), state.enabled ? "Bypass Filter" : "Enable Filter");
+            }
+            if (tray_effects_item) {
+                gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(tray_effects_item), state.advanced_effects);
+                gtk_widget_set_sensitive(tray_effects_item, state.enabled);
             }
         }
 
@@ -378,6 +456,7 @@ public:
             app->query_engine_state(new_st);
             if (new_st.running != app->state.running ||
                 new_st.enabled != app->state.enabled ||
+                new_st.advanced_effects != app->state.advanced_effects ||
                 std::fabs(new_st.level_db - app->state.level_db) > 0.05f ||
                 std::fabs(new_st.freq_hz - app->state.freq_hz) > 1.0f ||
                 std::fabs(new_st.delay_us - app->state.delay_us) > 1.0f ||
@@ -405,6 +484,15 @@ public:
         return FALSE;
     }
 
+    static gboolean on_effects_switch_set(GtkSwitch* /*sw*/, gboolean active, gpointer user_data) {
+        auto* app = static_cast<CrossfeedGuiApp*>(user_data);
+        if (app->suppress_events) return FALSE;
+        app->state.advanced_effects = active;
+        bool en = gtk_switch_get_active(GTK_SWITCH(app->master_switch));
+        app->apply_current_ui_params(en);
+        return FALSE;
+    }
+
     void apply_current_ui_params(bool en) {
         float lvl = static_cast<float>(gtk_adjustment_get_value(level_adj));
         float frq = static_cast<float>(gtk_adjustment_get_value(freq_adj));
@@ -412,7 +500,8 @@ public:
         float phs = phase_adj ? static_cast<float>(gtk_adjustment_get_value(phase_adj)) : state.phase_apf_hz;
         float trm = trim_adj ? static_cast<float>(gtk_adjustment_get_value(trim_adj)) : state.center_trim_db;
         float shd = shadow_adj ? static_cast<float>(gtk_adjustment_get_value(shadow_adj)) : state.shadow_hz;
-        apply_params(en, lvl, frq, del, phs, trm, shd);
+        bool adv = effects_switch ? gtk_switch_get_active(GTK_SWITCH(effects_switch)) : state.advanced_effects;
+        apply_params(en, lvl, frq, del, phs, trm, shd, adv);
     }
 
     static void on_any_slider_changed(GtkAdjustment* /*adj*/, gpointer user_data) {
@@ -428,7 +517,8 @@ public:
         bool en = gtk_switch_get_active(GTK_SWITCH(app->master_switch));
         app->apply_params(en, preset->level_db, preset->freq_hz,
                           preset->delay_us, preset->phase_apf_hz,
-                          preset->center_trim_db, preset->shadow_hz);
+                          preset->center_trim_db, preset->shadow_hz,
+                          app->state.advanced_effects);
         if (app->preset_desc_label) {
             gtk_label_set_text(GTK_LABEL(app->preset_desc_label), preset->description);
         }
@@ -457,6 +547,15 @@ public:
     static void on_tray_toggle(GtkWidget* /*item*/, gpointer user_data) {
         auto* app = static_cast<CrossfeedGuiApp*>(user_data);
         app->toggle_enabled();
+    }
+
+    static void on_tray_toggle_effects(GtkCheckMenuItem* item, gpointer user_data) {
+        auto* app = static_cast<CrossfeedGuiApp*>(user_data);
+        if (app->suppress_events) return;
+        gboolean active = gtk_check_menu_item_get_active(item);
+        app->state.advanced_effects = active;
+        bool en = gtk_switch_get_active(GTK_SWITCH(app->master_switch));
+        app->apply_current_ui_params(en);
     }
 
     static void on_tray_engine_action(GtkWidget* /*item*/, gpointer user_data) {
@@ -496,6 +595,11 @@ public:
         g_signal_connect(tray_toggle_item, "activate", G_CALLBACK(on_tray_toggle), this);
         gtk_menu_shell_append(GTK_MENU_SHELL(tray_menu), tray_toggle_item);
 
+        tray_effects_item = gtk_check_menu_item_new_with_label("All Spatial Effects");
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(tray_effects_item), TRUE);
+        g_signal_connect(tray_effects_item, "toggled", G_CALLBACK(on_tray_toggle_effects), this);
+        gtk_menu_shell_append(GTK_MENU_SHELL(tray_menu), tray_effects_item);
+
         // Presets submenu
         GtkWidget* item_presets = gtk_menu_item_new_with_label("Presets");
         GtkWidget* presets_menu = gtk_menu_new();
@@ -534,7 +638,7 @@ public:
     void build_ui() {
         window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
         gtk_window_set_title(GTK_WINDOW(window), "Crossfeed Control");
-        gtk_window_set_default_size(GTK_WINDOW(window), 480, 520);
+        gtk_window_set_default_size(GTK_WINDOW(window), 520, 680);
         gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
         gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
         gtk_window_set_icon_name(GTK_WINDOW(window), "audio-headphones");
@@ -561,15 +665,17 @@ public:
         gtk_container_add(GTK_CONTAINER(window), main_stack);
 
         // ================= CONTROLS VIEW =================
-        GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
-        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        scrolled_window = gtk_scrolled_window_new(nullptr, nullptr);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_kinetic_scrolling(GTK_SCROLLED_WINDOW(scrolled_window), TRUE);
+        gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(scrolled_window), FALSE);
 
         controls_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
         gtk_widget_set_margin_start(controls_box, 20);
         gtk_widget_set_margin_end(controls_box, 20);
         gtk_widget_set_margin_top(controls_box, 16);
         gtk_widget_set_margin_bottom(controls_box, 16);
-        gtk_container_add(GTK_CONTAINER(scrolled), controls_box);
+        gtk_container_add(GTK_CONTAINER(scrolled_window), controls_box);
 
         // --- Level Slider Section ---
         {
@@ -582,6 +688,7 @@ public:
 
             level_adj = gtk_adjustment_new(-10.0, -30.0, -6.0, 0.5, 2.0, 0.0);
             level_spin = gtk_spin_button_new(level_adj, 0.5, 1);
+            protect_from_accidental_scroll(level_spin, scrolled_window);
             gtk_box_pack_end(GTK_BOX(row), level_spin, FALSE, FALSE, 0);
             gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
 
@@ -594,6 +701,7 @@ public:
             gtk_scale_set_digits(GTK_SCALE(level_scale), 1);
             gtk_scale_set_draw_value(GTK_SCALE(level_scale), FALSE);
             gtk_scale_add_mark(GTK_SCALE(level_scale), -10.0, GTK_POS_BOTTOM, "Default");
+            protect_from_accidental_scroll(level_scale, scrolled_window);
             gtk_box_pack_start(GTK_BOX(sec), level_scale, FALSE, FALSE, 0);
 
             g_signal_connect(level_adj, "value-changed", G_CALLBACK(on_any_slider_changed), this);
@@ -611,6 +719,7 @@ public:
 
             freq_adj = gtk_adjustment_new(700.0, 200.0, 2000.0, 10.0, 50.0, 0.0);
             freq_spin = gtk_spin_button_new(freq_adj, 10.0, 0);
+            protect_from_accidental_scroll(freq_spin, scrolled_window);
             gtk_box_pack_end(GTK_BOX(row), freq_spin, FALSE, FALSE, 0);
             gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
 
@@ -623,6 +732,7 @@ public:
             gtk_scale_set_digits(GTK_SCALE(freq_scale), 0);
             gtk_scale_set_draw_value(GTK_SCALE(freq_scale), FALSE);
             gtk_scale_add_mark(GTK_SCALE(freq_scale), 700.0, GTK_POS_BOTTOM, "700 Hz");
+            protect_from_accidental_scroll(freq_scale, scrolled_window);
             gtk_box_pack_start(GTK_BOX(sec), freq_scale, FALSE, FALSE, 0);
 
             g_signal_connect(freq_adj, "value-changed", G_CALLBACK(on_any_slider_changed), this);
@@ -640,6 +750,48 @@ public:
             gtk_widget_set_margin_end(exp_box, 10);
             gtk_widget_set_margin_top(exp_box, 10);
             gtk_widget_set_margin_bottom(exp_box, 10);
+
+            // --- Switcher: Pure Crossfeed vs All Effects ---
+            {
+                GtkWidget* mode_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+                GtkWidget* switch_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+                GtkWidget* text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+
+                GtkWidget* m_title = gtk_label_new(nullptr);
+                gtk_label_set_markup(GTK_LABEL(m_title), "<b>All Spatial Effects (ITD / Phase / Shadow / Trim)</b>");
+                gtk_label_set_xalign(GTK_LABEL(m_title), 0.0);
+                gtk_box_pack_start(GTK_BOX(text_box), m_title, FALSE, FALSE, 0);
+
+                effects_desc_label = gtk_label_new(nullptr);
+                gtk_label_set_xalign(GTK_LABEL(effects_desc_label), 0.0);
+                gtk_label_set_line_wrap(GTK_LABEL(effects_desc_label), TRUE);
+                if (state.advanced_effects) {
+                    gtk_label_set_markup(GTK_LABEL(effects_desc_label),
+                        "<span foreground='#2ecc71'><b>All Effects Active:</b></span> ITD delay, phase alignment, head shadow, &amp; trim enabled.");
+                } else {
+                    gtk_label_set_markup(GTK_LABEL(effects_desc_label),
+                        "<span foreground='#e67e22'><b>Pure Crossfeed Active:</b></span> Classic low-pass stereo blend only. Spatial effects bypassed.");
+                }
+                gtk_box_pack_start(GTK_BOX(text_box), effects_desc_label, FALSE, FALSE, 0);
+
+                gtk_box_pack_start(GTK_BOX(switch_row), text_box, TRUE, TRUE, 0);
+
+                effects_switch = gtk_switch_new();
+                gtk_widget_set_valign(effects_switch, GTK_ALIGN_CENTER);
+                gtk_switch_set_active(GTK_SWITCH(effects_switch), state.advanced_effects);
+                g_signal_connect(effects_switch, "state-set", G_CALLBACK(on_effects_switch_set), this);
+                gtk_box_pack_end(GTK_BOX(switch_row), effects_switch, FALSE, FALSE, 0);
+
+                gtk_box_pack_start(GTK_BOX(mode_card), switch_row, FALSE, FALSE, 0);
+                gtk_box_pack_start(GTK_BOX(exp_box), mode_card, FALSE, FALSE, 2);
+
+                GtkWidget* hsep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+                gtk_box_pack_start(GTK_BOX(exp_box), hsep, FALSE, FALSE, 4);
+            }
+
+            // Container for all advanced controls and presets (disabled when Pure Crossfeed is active)
+            advanced_controls_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
+            gtk_widget_set_sensitive(advanced_controls_box, state.advanced_effects);
 
             // --- Presets Section (Shown only in this expanded menu!) ---
             {
@@ -663,7 +815,7 @@ public:
                 gtk_style_context_add_class(gtk_widget_get_style_context(preset_desc_label), "dim-label");
                 gtk_box_pack_start(GTK_BOX(p_section), preset_desc_label, FALSE, FALSE, 2);
 
-                gtk_box_pack_start(GTK_BOX(exp_box), p_section, FALSE, FALSE, 2);
+                gtk_box_pack_start(GTK_BOX(advanced_controls_box), p_section, FALSE, FALSE, 2);
             }
 
             // --- 1. Interaural Time Delay (ITD) Slider ---
@@ -677,6 +829,7 @@ public:
 
                 delay_adj = gtk_adjustment_new(280.0, 0.0, 800.0, 10.0, 50.0, 0.0);
                 delay_spin = gtk_spin_button_new(delay_adj, 10.0, 0);
+                protect_from_accidental_scroll(delay_spin, scrolled_window);
                 gtk_box_pack_end(GTK_BOX(row), delay_spin, FALSE, FALSE, 0);
                 gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
 
@@ -691,10 +844,11 @@ public:
                 gtk_scale_add_mark(GTK_SCALE(delay_scale), 260.0, GTK_POS_BOTTOM, "Chu Moy");
                 gtk_scale_add_mark(GTK_SCALE(delay_scale), 280.0, GTK_POS_BOTTOM, "Meier");
                 gtk_scale_add_mark(GTK_SCALE(delay_scale), 350.0, GTK_POS_BOTTOM, "BS2B");
+                protect_from_accidental_scroll(delay_scale, scrolled_window);
                 gtk_box_pack_start(GTK_BOX(sec), delay_scale, FALSE, FALSE, 0);
 
                 g_signal_connect(delay_adj, "value-changed", G_CALLBACK(on_any_slider_changed), this);
-                gtk_box_pack_start(GTK_BOX(exp_box), sec, FALSE, FALSE, 0);
+                gtk_box_pack_start(GTK_BOX(advanced_controls_box), sec, FALSE, FALSE, 0);
             }
 
             // --- 2. Phase Alignment All-Pass Filter (Hz) ---
@@ -708,6 +862,7 @@ public:
 
                 phase_adj = gtk_adjustment_new(1500.0, 200.0, 4000.0, 50.0, 200.0, 0.0);
                 phase_spin = gtk_spin_button_new(phase_adj, 50.0, 0);
+                protect_from_accidental_scroll(phase_spin, scrolled_window);
                 gtk_box_pack_end(GTK_BOX(row), phase_spin, FALSE, FALSE, 0);
                 gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
 
@@ -720,10 +875,11 @@ public:
                 gtk_scale_set_digits(GTK_SCALE(phase_scale), 0);
                 gtk_scale_set_draw_value(GTK_SCALE(phase_scale), FALSE);
                 gtk_scale_add_mark(GTK_SCALE(phase_scale), 1500.0, GTK_POS_BOTTOM, "1500 Hz");
+                protect_from_accidental_scroll(phase_scale, scrolled_window);
                 gtk_box_pack_start(GTK_BOX(sec), phase_scale, FALSE, FALSE, 0);
 
                 g_signal_connect(phase_adj, "value-changed", G_CALLBACK(on_any_slider_changed), this);
-                gtk_box_pack_start(GTK_BOX(exp_box), sec, FALSE, FALSE, 0);
+                gtk_box_pack_start(GTK_BOX(advanced_controls_box), sec, FALSE, FALSE, 0);
             }
 
             // --- 3. Center Summing Trim (dB) ---
@@ -737,6 +893,7 @@ public:
 
                 trim_adj = gtk_adjustment_new(-1.5, -6.0, 0.0, 0.5, 1.0, 0.0);
                 trim_spin = gtk_spin_button_new(trim_adj, 0.5, 1);
+                protect_from_accidental_scroll(trim_spin, scrolled_window);
                 gtk_box_pack_end(GTK_BOX(row), trim_spin, FALSE, FALSE, 0);
                 gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
 
@@ -749,10 +906,11 @@ public:
                 gtk_scale_set_digits(GTK_SCALE(trim_scale), 1);
                 gtk_scale_set_draw_value(GTK_SCALE(trim_scale), FALSE);
                 gtk_scale_add_mark(GTK_SCALE(trim_scale), -1.5, GTK_POS_BOTTOM, "-1.5 dB");
+                protect_from_accidental_scroll(trim_scale, scrolled_window);
                 gtk_box_pack_start(GTK_BOX(sec), trim_scale, FALSE, FALSE, 0);
 
                 g_signal_connect(trim_adj, "value-changed", G_CALLBACK(on_any_slider_changed), this);
-                gtk_box_pack_start(GTK_BOX(exp_box), sec, FALSE, FALSE, 0);
+                gtk_box_pack_start(GTK_BOX(advanced_controls_box), sec, FALSE, FALSE, 0);
             }
 
             // --- 4. Acoustic Head Shadow Cutoff (Hz) ---
@@ -766,6 +924,7 @@ public:
 
                 shadow_adj = gtk_adjustment_new(3000.0, 1000.0, 8000.0, 100.0, 500.0, 0.0);
                 shadow_spin = gtk_spin_button_new(shadow_adj, 100.0, 0);
+                protect_from_accidental_scroll(shadow_spin, scrolled_window);
                 gtk_box_pack_end(GTK_BOX(row), shadow_spin, FALSE, FALSE, 0);
                 gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
 
@@ -778,12 +937,14 @@ public:
                 gtk_scale_set_digits(GTK_SCALE(shadow_scale), 0);
                 gtk_scale_set_draw_value(GTK_SCALE(shadow_scale), FALSE);
                 gtk_scale_add_mark(GTK_SCALE(shadow_scale), 3000.0, GTK_POS_BOTTOM, "3000 Hz");
+                protect_from_accidental_scroll(shadow_scale, scrolled_window);
                 gtk_box_pack_start(GTK_BOX(sec), shadow_scale, FALSE, FALSE, 0);
 
                 g_signal_connect(shadow_adj, "value-changed", G_CALLBACK(on_any_slider_changed), this);
-                gtk_box_pack_start(GTK_BOX(exp_box), sec, FALSE, FALSE, 0);
+                gtk_box_pack_start(GTK_BOX(advanced_controls_box), sec, FALSE, FALSE, 0);
             }
 
+            gtk_box_pack_start(GTK_BOX(exp_box), advanced_controls_box, FALSE, FALSE, 0);
             gtk_container_add(GTK_CONTAINER(expander), exp_box);
             gtk_box_pack_start(GTK_BOX(controls_box), expander, FALSE, FALSE, 4);
         }
@@ -849,7 +1010,7 @@ public:
             gtk_box_pack_start(GTK_BOX(controls_box), abox, FALSE, FALSE, 0);
         }
 
-        gtk_stack_add_named(GTK_STACK(main_stack), scrolled, "controls");
+        gtk_stack_add_named(GTK_STACK(main_stack), scrolled_window, "controls");
 
         // ================= STOPPED VIEW =================
         stopped_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);

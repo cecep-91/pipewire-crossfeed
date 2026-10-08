@@ -113,6 +113,11 @@ bool Config::load_state(ConfigState& state) {
         try { state.shadow_hz = std::stof(val); } catch (...) {}
     }
 
+    val = extract_val("advanced_effects");
+    if (!val.empty()) {
+        state.advanced_effects = (val == "true" || val == "1");
+    }
+
     val = extract_val("backend");
     if (!val.empty()) {
         state.backend = val;
@@ -154,6 +159,7 @@ bool Config::save_state(const ConfigState& state) {
          << "  \"phase_apf_hz\": " << state.phase_apf_hz << ",\n"
          << "  \"center_trim_db\": " << state.center_trim_db << ",\n"
          << "  \"shadow_hz\": " << state.shadow_hz << ",\n"
+         << "  \"advanced_effects\": " << (state.advanced_effects ? "true" : "false") << ",\n"
          << "  \"backend\": \"" << state.backend << "\",\n"
          << "  \"target_sink\": \"" << state.target_sink << "\",\n"
          << "  \"sample_rate\": " << state.sample_rate << ",\n"

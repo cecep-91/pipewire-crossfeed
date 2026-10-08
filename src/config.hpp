@@ -13,6 +13,7 @@ struct ConfigState {
     float phase_apf_hz = 1500.0f;
     float center_trim_db = -1.5f;
     float shadow_hz = 3000.0f;
+    bool advanced_effects = true;
     std::string backend = "auto";
     std::string target_sink = "auto";
     uint32_t sample_rate = 48000;

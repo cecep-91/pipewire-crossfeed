@@ -23,7 +23,7 @@ void CrossfeedDSP::set_params(float sample_rate, float level_db, float freq_hz, 
 
 void CrossfeedDSP::set_all_params(float sample_rate, float level_db, float freq_hz,
                                  float delay_us, float phase_apf_hz, float center_trim_db,
-                                 float shadow_hz, bool enabled) {
+                                 float shadow_hz, bool advanced_effects, bool enabled) {
     std::lock_guard<std::mutex> lock(params_mutex_);
     params_.sample_rate = std::max(8000.0f, sample_rate);
     params_.level_db = std::clamp(level_db, MIN_LEVEL_DB, MAX_LEVEL_DB);
@@ -32,8 +32,19 @@ void CrossfeedDSP::set_all_params(float sample_rate, float level_db, float freq_
     params_.phase_apf_hz = std::clamp(phase_apf_hz, MIN_PHASE_APF_HZ, MAX_PHASE_APF_HZ);
     params_.center_trim_db = std::clamp(center_trim_db, MIN_CENTER_TRIM_DB, MAX_CENTER_TRIM_DB);
     params_.shadow_hz = std::clamp(shadow_hz, MIN_SHADOW_HZ, MAX_SHADOW_HZ);
+    params_.advanced_effects = advanced_effects;
     params_.enabled = enabled;
     recompute_coeffs_locked();
+}
+
+void CrossfeedDSP::set_advanced_effects(bool enabled) {
+    std::lock_guard<std::mutex> lock(params_mutex_);
+    params_.advanced_effects = enabled;
+}
+
+bool CrossfeedDSP::get_advanced_effects() const {
+    std::lock_guard<std::mutex> lock(params_mutex_);
+    return params_.advanced_effects;
 }
 
 void CrossfeedDSP::set_level_db(float level_db) {
@@ -237,20 +248,25 @@ void CrossfeedDSP::process_interleaved(const float* in, float* out, size_t frame
         float c_l = cross_l_.process(in_l, cross_c);
         float c_r = cross_r_.process(in_r, cross_c);
 
-        c_l = shadow_l_.process(c_l, shadow_c);
-        c_r = shadow_r_.process(c_r, shadow_c);
+        if (p.advanced_effects) {
+            c_l = shadow_l_.process(c_l, shadow_c);
+            c_r = shadow_r_.process(c_r, shadow_c);
 
-        c_l = apf_l_.process(c_l, apf_c);
-        c_r = apf_r_.process(c_r, apf_c);
+            c_l = apf_l_.process(c_l, apf_c);
+            c_r = apf_r_.process(c_r, apf_c);
 
-        delay_l_.write(c_l);
-        delay_r_.write(c_r);
+            delay_l_.write(c_l);
+            delay_r_.write(c_r);
 
-        float c_del_l = delay_l_.read(delay_s);
-        float c_del_r = delay_r_.read(delay_s);
+            float c_del_l = delay_l_.read(delay_s);
+            float c_del_r = delay_r_.read(delay_s);
 
-        out[2 * i]     = (d_l + gain2 * c_del_r) * trim;
-        out[2 * i + 1] = (d_r + gain2 * c_del_l) * trim;
+            out[2 * i]     = (d_l + gain2 * c_del_r) * trim;
+            out[2 * i + 1] = (d_r + gain2 * c_del_l) * trim;
+        } else {
+            out[2 * i]     = d_l + gain2 * c_r;
+            out[2 * i + 1] = d_r + gain2 * c_l;
+        }
     }
 }
 
@@ -289,20 +305,25 @@ void CrossfeedDSP::process_planar(const float* in_l, const float* in_r, float* o
         float c_l = cross_l_.process(l, cross_c);
         float c_r = cross_r_.process(r, cross_c);
 
-        c_l = shadow_l_.process(c_l, shadow_c);
-        c_r = shadow_r_.process(c_r, shadow_c);
+        if (p.advanced_effects) {
+            c_l = shadow_l_.process(c_l, shadow_c);
+            c_r = shadow_r_.process(c_r, shadow_c);
 
-        c_l = apf_l_.process(c_l, apf_c);
-        c_r = apf_r_.process(c_r, apf_c);
+            c_l = apf_l_.process(c_l, apf_c);
+            c_r = apf_r_.process(c_r, apf_c);
 
-        delay_l_.write(c_l);
-        delay_r_.write(c_r);
+            delay_l_.write(c_l);
+            delay_r_.write(c_r);
 
-        float c_del_l = delay_l_.read(delay_s);
-        float c_del_r = delay_r_.read(delay_s);
+            float c_del_l = delay_l_.read(delay_s);
+            float c_del_r = delay_r_.read(delay_s);
 
-        out_l[i] = (d_l + gain2 * c_del_r) * trim;
-        out_r[i] = (d_r + gain2 * c_del_l) * trim;
+            out_l[i] = (d_l + gain2 * c_del_r) * trim;
+            out_r[i] = (d_r + gain2 * c_del_l) * trim;
+        } else {
+            out_l[i] = d_l + gain2 * c_r;
+            out_r[i] = d_r + gain2 * c_l;
+        }
     }
 }
 

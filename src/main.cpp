@@ -49,6 +49,8 @@ static void print_help(const char* prog) {
               << "  --phase <Hz>      Phase alignment all-pass frequency (200 to 4000, default: 1500)\n"
               << "  --trim <dB>       Center summing gain trim in dB (-6.0 to 0.0, default: -1.5)\n"
               << "  --shadow <Hz>     Head acoustic shadow cutoff in Hz (1000 to 8000, default: 3000)\n"
+              << "  --advanced <0|1>  Enable all acoustic spatial effects (1) or pure crossfeed (0)\n"
+              << "  --pure            Pure crossfeed mode (bypass delay, phase, shadow, and trim)\n"
               << "  --rate <Hz>       Sample rate (default: 48000)\n"
               << "  --buffer <frames> Buffer size (default: 256)\n"
               << "  --bypass          Start in bypassed state\n\n"
@@ -59,6 +61,9 @@ static void print_help(const char* prog) {
               << "  --phase <Hz>      Set phase alignment all-pass frequency in Hz\n"
               << "  --trim <dB>       Set center summing gain trim in dB\n"
               << "  --shadow <Hz>     Set head shadow cutoff in Hz\n"
+              << "  --advanced <0|1>  Set all effects (1) or pure crossfeed (0)\n"
+              << "  --pure            Switch to pure crossfeed mode\n"
+              << "  --effects         Switch to all effects mode\n"
               << "  --enabled <0|1>   Set filter active (1) or bypassed (0)\n\n"
               << "Status Options:\n"
               << "  --json            Output status in JSON format\n";
@@ -86,6 +91,12 @@ static int cmd_run(int argc, char** argv) {
             config.center_trim_db = std::stof(argv[++i]);
         } else if (arg == "--shadow" && i + 1 < argc) {
             config.shadow_hz = std::stof(argv[++i]);
+        } else if (arg == "--advanced" && i + 1 < argc) {
+            config.advanced_effects = (std::string(argv[++i]) == "1");
+        } else if (arg == "--pure") {
+            config.advanced_effects = false;
+        } else if (arg == "--effects") {
+            config.advanced_effects = true;
         } else if (arg == "--rate" && i + 1 < argc) {
             config.sample_rate = std::stoul(argv[++i]);
         } else if (arg == "--buffer" && i + 1 < argc) {
@@ -100,6 +111,7 @@ static int cmd_run(int argc, char** argv) {
     std::cout << "[crossfeed] Starting standalone crossfeed audio engine...\n"
               << "  Backend: " << config.backend << "\n"
               << "  Target: " << config.target_sink << "\n"
+              << "  Mode: " << (config.advanced_effects ? "All Effects (ITD, APF, Shadow, Trim)" : "Pure Crossfeed") << "\n"
               << "  Level: " << config.level_db << " dB\n"
               << "  Freq: " << config.freq_hz << " Hz\n"
               << "  Delay: " << config.delay_us << " µs\n"
@@ -111,7 +123,7 @@ static int cmd_run(int argc, char** argv) {
     CrossfeedDSP dsp;
     dsp.set_all_params(static_cast<float>(config.sample_rate), config.level_db, config.freq_hz,
                        config.delay_us, config.phase_apf_hz, config.center_trim_db, config.shadow_hz,
-                       config.enabled);
+                       config.advanced_effects, config.enabled);
 
     auto backend = create_backend(config.backend);
     if (!backend) {
@@ -260,6 +272,7 @@ static int cmd_status(bool json_output) {
     std::string phs = get_field("phase_apf_hz");
     std::string trm = get_field("center_trim_db");
     std::string shd = get_field("shadow_hz");
+    std::string adv = get_field("advanced_effects");
     std::string bk = get_field("backend");
     std::string tgt = get_field("target");
     std::string sr = get_field("sample_rate");
@@ -267,6 +280,7 @@ static int cmd_status(bool json_output) {
 
     std::cout << "  State:          " << (st == "running" ? "● Running" : "○ Stopped") << "\n"
               << "  Filter:         " << (en == "true" ? "ON (Processing active)" : "OFF (Bypassed)") << "\n"
+              << "  Mode:           " << (adv == "false" ? "Pure Crossfeed (Basic blend only)" : "All Effects (ITD, APF, Shadow, Trim)") << "\n"
               << "  Blend Level:    " << lvl << " dB\n"
               << "  Crossover:      " << frq << " Hz\n"
               << "  Delay (ITD):    " << (del.empty() ? "280" : del) << " µs\n"
@@ -320,12 +334,18 @@ static int cmd_set(int argc, char** argv) {
             cmd += " trim=" + std::string(argv[++i]);
         } else if (arg == "--shadow" && i + 1 < argc) {
             cmd += " shadow=" + std::string(argv[++i]);
+        } else if (arg == "--advanced" && i + 1 < argc) {
+            cmd += " advanced=" + std::string(argv[++i]);
+        } else if (arg == "--pure") {
+            cmd += " pure=1";
+        } else if (arg == "--effects") {
+            cmd += " advanced=1";
         } else if (arg == "--enabled" && i + 1 < argc) {
             cmd += " enabled=" + std::string(argv[++i]);
         }
     }
     if (cmd == "SET") {
-        std::cerr << "Usage: crossfeed set [--level <dB>] [--freq <Hz>] [--delay <us>] [--phase <Hz>] [--trim <dB>] [--shadow <Hz>] [--enabled <0|1>]\n";
+        std::cerr << "Usage: crossfeed set [--level <dB>] [--freq <Hz>] [--delay <us>] [--phase <Hz>] [--trim <dB>] [--shadow <Hz>] [--advanced <0|1>] [--pure] [--effects] [--enabled <0|1>]\n";
         return 1;
     }
 
