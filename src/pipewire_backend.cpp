@@ -58,6 +58,10 @@ PipeWireBackend::~PipeWireBackend() {
 }
 
 std::string PipeWireBackend::resolve_default_sink() {
+    auto is_self = [](const std::string& name) {
+        return name == "crossfeed" || name == "crossfeed_sink" || name == "Crossfeed";
+    };
+
     FILE* fp = popen("pactl info 2>/dev/null | grep 'Default Sink:' | cut -d' ' -f3", "r");
     if (fp) {
         char buf[256] = {0};
@@ -65,25 +69,90 @@ std::string PipeWireBackend::resolve_default_sink() {
             pclose(fp);
             std::string s(buf);
             while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
-            if (!s.empty() && is_valid_port_name(s)) return s;
+            if (!s.empty() && is_valid_port_name(s) && !is_self(s)) return s;
         } else {
             pclose(fp);
         }
     }
 
-    // Fallback: first sink in pw-link -i
-    fp = popen("pw-link -i 2>/dev/null | grep playback_FL | head -1 | cut -d: -f1", "r");
+    // Fallback: first non-crossfeed sink in pw-link -i
+    fp = popen("pw-link -i 2>/dev/null | grep playback_FL | cut -d: -f1", "r");
     if (fp) {
         char buf[256] = {0};
-        if (fgets(buf, sizeof(buf), fp)) {
-            pclose(fp);
+        while (fgets(buf, sizeof(buf), fp)) {
             std::string s(buf);
             while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
-            if (!s.empty() && is_valid_port_name(s)) return s;
+            if (!s.empty() && is_valid_port_name(s) && !is_self(s)) {
+                pclose(fp);
+                return s;
+            }
         }
         pclose(fp);
     }
     return "";
+}
+
+bool PipeWireBackend::load_null_sink() {
+    // 1. Check if module-null-sink for crossfeed is already loaded
+    FILE* fp = popen("pactl list short modules 2>/dev/null | grep module-null-sink | grep 'sink_name=crossfeed' | awk '{print $1}'", "r");
+    if (fp) {
+        char buf[64] = {0};
+        if (fgets(buf, sizeof(buf), fp)) {
+            try {
+                null_sink_module_index_ = std::stoul(buf);
+                own_module_ = true;
+                pclose(fp);
+            } catch (...) {}
+        } else {
+            pclose(fp);
+        }
+    }
+
+    // 2. Load module-null-sink
+    if (null_sink_module_index_ == 0xFFFFFFFFU) {
+        fp = popen("pactl load-module module-null-sink sink_name=crossfeed sink_properties=device.description=Crossfeed 2>/dev/null", "r");
+        if (fp) {
+            char buf[64] = {0};
+            if (fgets(buf, sizeof(buf), fp)) {
+                try {
+                    null_sink_module_index_ = std::stoul(buf);
+                    own_module_ = true;
+                } catch (...) {}
+            }
+            pclose(fp);
+        }
+    }
+
+    if (null_sink_module_index_ == 0xFFFFFFFFU) {
+        return false;
+    }
+
+    // 3. Move active sink inputs to crossfeed so ongoing audio immediately routes through filter
+    system("pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; done");
+
+    // 4. Set crossfeed as default sink
+    system("pactl set-default-sink crossfeed 2>/dev/null");
+    return true;
+}
+
+void PipeWireBackend::unload_null_sink() {
+    // 1. Restore original default sink and move active streams back
+    if (!original_default_sink_.empty()) {
+        std::string move_cmd = "pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" \"" + original_default_sink_ + "\" 2>/dev/null; done";
+        system(move_cmd.c_str());
+        std::string def_cmd = "pactl set-default-sink \"" + original_default_sink_ + "\" 2>/dev/null";
+        system(def_cmd.c_str());
+    }
+
+    // 2. Unload module
+    if (null_sink_module_index_ != 0xFFFFFFFFU) {
+        std::string cmd = "pactl unload-module " + std::to_string(null_sink_module_index_) + " >/dev/null 2>&1";
+        system(cmd.c_str());
+        null_sink_module_index_ = 0xFFFFFFFFU;
+        own_module_ = false;
+    } else {
+        system("pactl list short modules 2>/dev/null | grep module-null-sink | grep 'sink_name=crossfeed' | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl unload-module \"$id\" 2>/dev/null; done");
+    }
 }
 
 std::vector<SinkDevice> PipeWireBackend::list_sinks() {
@@ -95,7 +164,7 @@ std::vector<SinkDevice> PipeWireBackend::list_sinks() {
     while (fgets(buf, sizeof(buf), fp)) {
         std::string s(buf);
         while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
-        if (!s.empty() && is_valid_port_name(s)) {
+        if (!s.empty() && is_valid_port_name(s) && s != "crossfeed" && s != "Crossfeed" && s != "crossfeed_sink") {
             SinkDevice dev;
             dev.name = s;
             dev.description = s;
@@ -128,11 +197,16 @@ bool PipeWireBackend::init(CrossfeedDSP* dsp, const std::string& target_sink, ui
         return false;
     }
 
+    original_default_sink_ = active_target_sink_;
     target_playback_fl_ = active_target_sink_ + ":playback_FL";
     target_playback_fr_ = active_target_sink_ + ":playback_FR";
 
-    std::cout << "[crossfeed] In-Line filtering active device: " << active_target_sink_ << std::endl;
-    std::cout << "  (Zero additional sinks created; audio filters directly into your current output)" << std::endl;
+    std::cout << "[crossfeed] Native PipeWire filter active for device: " << active_target_sink_ << std::endl;
+
+    if (!load_null_sink()) {
+        std::cerr << "[crossfeed] Failed to initialize 'crossfeed' virtual sink." << std::endl;
+        return false;
+    }
 
     pw_init(nullptr, nullptr);
 
@@ -240,7 +314,11 @@ void PipeWireBackend::link_manager_loop() {
     // Initial delay for filter registration in the graph
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
-    // Ensure crossfeed-dsp output is connected to target playback sink
+    // Connect crossfeed:monitor -> crossfeed-dsp input
+    safe_pw_link("crossfeed:monitor_FL", "crossfeed-dsp:in_FL");
+    safe_pw_link("crossfeed:monitor_FR", "crossfeed-dsp:in_FR");
+
+    // Connect crossfeed-dsp output -> physical target sink
     safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_);
     safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_);
 
@@ -250,20 +328,24 @@ void PipeWireBackend::link_manager_loop() {
     };
 
     while (running_.load()) {
-        // Dynamically follow default output device if requested target is auto
+        // Dynamically follow default physical output device if requested target is auto
         if (requested_target_.empty() || requested_target_ == "auto") {
             std::string cur_def = resolve_default_sink();
             if (!cur_def.empty() && is_valid_port_name(cur_def) && cur_def != active_target_sink_) {
-                restore_all_links();
+                safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_, true);
+                safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_, true);
+
                 active_target_sink_ = cur_def;
+                original_default_sink_ = cur_def;
                 target_playback_fl_ = active_target_sink_ + ":playback_FL";
                 target_playback_fr_ = active_target_sink_ + ":playback_FR";
+
                 safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_);
                 safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_);
             }
         }
 
-        // Parse full PipeWire link graph
+        // Parse PipeWire link graph to ensure bridge links remain intact
         std::map<std::string, PortLinks> graph;
         FILE* fp = popen("pw-link -l 2>/dev/null", "r");
         if (fp) {
@@ -299,127 +381,35 @@ void PipeWireBackend::link_manager_loop() {
             pclose(fp);
         }
 
-        // 1. Intercept newly appearing sources that are trying to play to target_playback_fl_ / target_playback_fr_
-        std::vector<std::string> to_intercept_fl;
-        for (const auto& src : graph[target_playback_fl_].inputs) {
-            if (src != "crossfeed-dsp:out_FL" && src.find("crossfeed-dsp") == std::string::npos) {
-                to_intercept_fl.push_back(src);
+        // 1. Maintain input bridge: crossfeed:monitor -> crossfeed-dsp:in
+        bool in_fl_linked = false;
+        auto in_fl_it = graph.find("crossfeed-dsp:in_FL");
+        if (in_fl_it != graph.end()) {
+            for (const auto& src : in_fl_it->second.inputs) {
+                if (src == "crossfeed:monitor_FL") { in_fl_linked = true; break; }
             }
         }
-
-        std::vector<std::string> to_intercept_fr;
-        for (const auto& src : graph[target_playback_fr_].inputs) {
-            if (src != "crossfeed-dsp:out_FR" && src.find("crossfeed-dsp") == std::string::npos) {
-                to_intercept_fr.push_back(src);
-            }
+        if (!in_fl_linked) {
+            safe_pw_link("crossfeed:monitor_FL", "crossfeed-dsp:in_FL");
         }
 
-        for (const auto& src_l : to_intercept_fl) {
-            if (!is_valid_port_name(src_l)) continue;
-            bool already_linked = false;
-            auto in_fl_it = graph.find("crossfeed-dsp:in_FL");
-            if (in_fl_it != graph.end()) {
-                for (const auto& in_src : in_fl_it->second.inputs) {
-                    if (in_src == src_l) {
-                        already_linked = true;
-                        break;
-                    }
-                }
-            }
-            if (!already_linked) {
-                safe_pw_link(src_l, "crossfeed-dsp:in_FL");
-            }
-            safe_pw_link(src_l, target_playback_fl_, true);
-            std::lock_guard<std::mutex> lock(intercepted_mutex_);
-            intercepted_ports_fl_.insert(src_l);
-        }
-
-        for (const auto& src_r : to_intercept_fr) {
-            if (!is_valid_port_name(src_r)) continue;
-            bool already_linked = false;
-            auto in_fr_it = graph.find("crossfeed-dsp:in_FR");
-            if (in_fr_it != graph.end()) {
-                for (const auto& in_src : in_fr_it->second.inputs) {
-                    if (in_src == src_r) {
-                        already_linked = true;
-                        break;
-                    }
-                }
-            }
-            if (!already_linked) {
-                safe_pw_link(src_r, "crossfeed-dsp:in_FR");
-            }
-            safe_pw_link(src_r, target_playback_fr_, true);
-            std::lock_guard<std::mutex> lock(intercepted_mutex_);
-            intercepted_ports_fr_.insert(src_r);
-        }
-
-        // 2. Prune duplicate/stale streams feeding crossfeed-dsp
-        // If a port feeding crossfeed-dsp has been rerouted by session manager into
-        // an intermediate processor (like EasyEffects, JamesDSP, or a filter-chain sink),
-        // we MUST unlink it from crossfeed-dsp immediately to prevent duplicate audio / phase distortion!
-        std::vector<std::string> stale_fl;
-        for (const auto& src : graph["crossfeed-dsp:in_FL"].inputs) {
-            bool has_other_destination = false;
-            for (const auto& dst : graph[src].outputs) {
-                if (dst != "crossfeed-dsp:in_FL") {
-                    has_other_destination = true;
-                    break;
-                }
-            }
-            if (has_other_destination) {
-                stale_fl.push_back(src);
+        bool in_fr_linked = false;
+        auto in_fr_it = graph.find("crossfeed-dsp:in_FR");
+        if (in_fr_it != graph.end()) {
+            for (const auto& src : in_fr_it->second.inputs) {
+                if (src == "crossfeed:monitor_FR") { in_fr_linked = true; break; }
             }
         }
-
-        for (const auto& stale : stale_fl) {
-            if (!is_valid_port_name(stale)) continue;
-            safe_pw_link(stale, "crossfeed-dsp:in_FL", true);
-            std::lock_guard<std::mutex> lock(intercepted_mutex_);
-            intercepted_ports_fl_.erase(stale);
+        if (!in_fr_linked) {
+            safe_pw_link("crossfeed:monitor_FR", "crossfeed-dsp:in_FR");
         }
 
-        std::vector<std::string> stale_fr;
-        for (const auto& src : graph["crossfeed-dsp:in_FR"].inputs) {
-            bool has_other_destination = false;
-            for (const auto& dst : graph[src].outputs) {
-                if (dst != "crossfeed-dsp:in_FR") {
-                    has_other_destination = true;
-                    break;
-                }
-            }
-            if (has_other_destination) {
-                stale_fr.push_back(src);
-            }
-        }
-
-        for (const auto& stale : stale_fr) {
-            if (!is_valid_port_name(stale)) continue;
-            safe_pw_link(stale, "crossfeed-dsp:in_FR", true);
-            std::lock_guard<std::mutex> lock(intercepted_mutex_);
-            intercepted_ports_fr_.erase(stale);
-        }
-
-        // Ensure crossfeed-dsp output remains connected to physical sink if missing from graph
+        // 2. Maintain output bridge: crossfeed-dsp:out -> target_playback
         bool out_fl_linked = false;
         auto out_fl_it = graph.find("crossfeed-dsp:out_FL");
         if (out_fl_it != graph.end()) {
             for (const auto& dst : out_fl_it->second.outputs) {
-                if (dst == target_playback_fl_) {
-                    out_fl_linked = true;
-                    break;
-                }
-            }
-        }
-        if (!out_fl_linked) {
-            auto tgt_fl_it = graph.find(target_playback_fl_);
-            if (tgt_fl_it != graph.end()) {
-                for (const auto& src : tgt_fl_it->second.inputs) {
-                    if (src == "crossfeed-dsp:out_FL") {
-                        out_fl_linked = true;
-                        break;
-                    }
-                }
+                if (dst == target_playback_fl_) { out_fl_linked = true; break; }
             }
         }
         if (!out_fl_linked) {
@@ -430,93 +420,23 @@ void PipeWireBackend::link_manager_loop() {
         auto out_fr_it = graph.find("crossfeed-dsp:out_FR");
         if (out_fr_it != graph.end()) {
             for (const auto& dst : out_fr_it->second.outputs) {
-                if (dst == target_playback_fr_) {
-                    out_fr_linked = true;
-                    break;
-                }
-            }
-        }
-        if (!out_fr_linked) {
-            auto tgt_fr_it = graph.find(target_playback_fr_);
-            if (tgt_fr_it != graph.end()) {
-                for (const auto& src : tgt_fr_it->second.inputs) {
-                    if (src == "crossfeed-dsp:out_FR") {
-                        out_fr_linked = true;
-                        break;
-                    }
-                }
+                if (dst == target_playback_fr_) { out_fr_linked = true; break; }
             }
         }
         if (!out_fr_linked) {
             safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_);
         }
 
-        // Check every 250ms (reduced idle CPU overhead)
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 }
 
 void PipeWireBackend::restore_all_links() {
-    std::lock_guard<std::mutex> lock(intercepted_mutex_);
-
-    // Check current graph to see if any port is already routed to another destination (like EasyEffects)
-    // If it is already routed elsewhere, DO NOT reconnect it to target_playback_fl_/fr_!
-    FILE* fp = popen("pw-link -l 2>/dev/null", "r");
-    std::map<std::string, std::vector<std::string>> outputs_map;
-    if (fp) {
-        char line[512];
-        std::string cur;
-        while (fgets(line, sizeof(line), fp)) {
-            std::string l(line);
-            while (!l.empty() && (l.back() == '\r' || l.back() == '\n')) l.pop_back();
-            if (l.find("|->") != std::string::npos) {
-                size_t pos = l.find("|->");
-                std::string target = l.substr(pos + 3);
-                while (!target.empty() && target.front() == ' ') target.erase(target.begin());
-                while (!target.empty() && target.back() == ' ') target.pop_back();
-                if (!cur.empty() && !target.empty() && is_valid_port_name(target)) outputs_map[cur].push_back(target);
-            } else if (!l.empty() && l[0] != ' ' && l[0] != '\t' && l[0] != '|') {
-                cur = l;
-                while (!cur.empty() && cur.back() == ' ') cur.pop_back();
-            }
-        }
-        pclose(fp);
-    }
-
-    for (const auto& src_l : intercepted_ports_fl_) {
-        if (!is_valid_port_name(src_l)) continue;
-        bool routed_elsewhere = false;
-        for (const auto& dst : outputs_map[src_l]) {
-            if (dst != "crossfeed-dsp:in_FL") {
-                routed_elsewhere = true;
-                break;
-            }
-        }
-        if (!routed_elsewhere) {
-            safe_pw_link(src_l, target_playback_fl_);
-        }
-        safe_pw_link(src_l, "crossfeed-dsp:in_FL", true);
-    }
-    intercepted_ports_fl_.clear();
-
-    for (const auto& src_r : intercepted_ports_fr_) {
-        if (!is_valid_port_name(src_r)) continue;
-        bool routed_elsewhere = false;
-        for (const auto& dst : outputs_map[src_r]) {
-            if (dst != "crossfeed-dsp:in_FR") {
-                routed_elsewhere = true;
-                break;
-            }
-        }
-        if (!routed_elsewhere) {
-            safe_pw_link(src_r, target_playback_fr_);
-        }
-        safe_pw_link(src_r, "crossfeed-dsp:in_FR", true);
-    }
-    intercepted_ports_fr_.clear();
-
+    safe_pw_link("crossfeed:monitor_FL", "crossfeed-dsp:in_FL", true);
+    safe_pw_link("crossfeed:monitor_FR", "crossfeed-dsp:in_FR", true);
     safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_, true);
     safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_, true);
+    unload_null_sink();
 }
 
 bool PipeWireBackend::run() {
@@ -525,7 +445,7 @@ bool PipeWireBackend::run() {
     running_.store(true);
     link_thread_ = std::thread(&PipeWireBackend::link_manager_loop, this);
 
-    std::cout << "[crossfeed] In-line DSP filter running. Real-time audio active.\n";
+    std::cout << "[crossfeed] Native PipeWire DSP filter running. Real-time audio active.\n";
     pw_main_loop_run(loop_);
 
     stop();

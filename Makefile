@@ -18,7 +18,7 @@ ALSA_CFLAGS := $(shell $(PKG_CONFIG) --cflags alsa 2>/dev/null || echo "")
 GTK_LIBS := $(shell $(PKG_CONFIG) --libs gtk+-3.0 ayatana-appindicator3-0.1 2>/dev/null || echo "-lgtk-3 -layatana-appindicator3")
 GTK_CFLAGS := $(shell $(PKG_CONFIG) --cflags gtk+-3.0 ayatana-appindicator3-0.1 2>/dev/null || echo "-I/usr/include/gtk-3.0")
 
-ALL_CFLAGS := $(CXXFLAGS) $(PW_CFLAGS) $(PULSE_CFLAGS) $(ALSA_CFLAGS) $(GTK_CFLAGS)
+ALL_CFLAGS := $(CXXFLAGS) $(PW_CFLAGS) $(PULSE_CFLAGS) $(ALSA_CFLAGS) $(GTK_CFLAGS) -MMD -MP
 ALL_LIBS := $(PW_LIBS) $(PULSE_LIBS) $(ALSA_LIBS) $(GTK_LIBS) -pthread
 
 SRCS = src/main.cpp \
@@ -97,8 +97,10 @@ pkg: $(TARGET)
 	bash ./scripts/package.sh all
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(TEST_TARGET)
+	rm -f $(OBJS) $(OBJS:.o=.d) $(TARGET) $(TEST_TARGET)
 	rm -rf bin dist build
+
+-include $(OBJS:.o=.d)
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)

@@ -42,6 +42,8 @@ public:
 private:
     static bool safe_pw_link(const std::string& src, const std::string& dst, bool disconnect = false);
     std::string resolve_default_sink();
+    bool load_null_sink();
+    void unload_null_sink();
     void link_manager_loop();
     void restore_all_links();
 
@@ -50,6 +52,9 @@ private:
     std::string active_target_sink_;
     std::string target_playback_fl_;
     std::string target_playback_fr_;
+    std::string original_default_sink_;
+    uint32_t null_sink_module_index_ = 0xFFFFFFFFU;
+    bool own_module_ = false;
 
     uint32_t sample_rate_ = 48000;
     uint32_t buffer_frames_ = 256;

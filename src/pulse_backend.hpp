@@ -40,6 +40,7 @@ private:
 
     uint32_t null_sink_module_index_ = PA_INVALID_INDEX;
     bool own_module_ = false;
+    std::string original_default_sink_;
 
     pa_simple* rec_stream_ = nullptr;
     pa_simple* play_stream_ = nullptr;

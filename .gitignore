@@ -4,6 +4,7 @@ __pycache__/
 # Build outputs
 bin/
 *.o
+*.d
 build/
 dist/
 *.spec

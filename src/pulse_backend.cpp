@@ -139,23 +139,40 @@ bool PulseBackend::load_null_sink() {
         pclose(fp);
     }
 
-    // 2. Load module-null-sink
-    fp = popen("pactl load-module module-null-sink sink_name=crossfeed sink_properties=device.description=Crossfeed 2>/dev/null", "r");
-    if (!fp) return false;
-    char buf[64] = {0};
-    if (fgets(buf, sizeof(buf), fp)) {
-        try {
-            null_sink_module_index_ = std::stoul(buf);
-            own_module_ = true;
-            pclose(fp);
-            return true;
-        } catch (...) {}
+    if (null_sink_module_index_ == PA_INVALID_INDEX) {
+        // 2. Load module-null-sink
+        fp = popen("pactl load-module module-null-sink sink_name=crossfeed sink_properties=device.description=Crossfeed 2>/dev/null", "r");
+        if (!fp) return false;
+        char buf[64] = {0};
+        if (fgets(buf, sizeof(buf), fp)) {
+            try {
+                null_sink_module_index_ = std::stoul(buf);
+                own_module_ = true;
+            } catch (...) {}
+        }
+        pclose(fp);
     }
-    pclose(fp);
-    return false;
+
+    if (null_sink_module_index_ == PA_INVALID_INDEX) {
+        return false;
+    }
+
+    // 3. Move active sink inputs to crossfeed
+    system("pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; done");
+
+    // 4. Set crossfeed as default sink
+    system("pactl set-default-sink crossfeed 2>/dev/null");
+    return true;
 }
 
 void PulseBackend::unload_null_sink() {
+    if (!original_default_sink_.empty()) {
+        std::string move_cmd = "pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" \"" + original_default_sink_ + "\" 2>/dev/null; done";
+        system(move_cmd.c_str());
+        std::string def_cmd = "pactl set-default-sink \"" + original_default_sink_ + "\" 2>/dev/null";
+        system(def_cmd.c_str());
+    }
+
     if (null_sink_module_index_ != PA_INVALID_INDEX) {
         std::string cmd = "pactl unload-module " + std::to_string(null_sink_module_index_) + " >/dev/null 2>&1";
         system(cmd.c_str());
@@ -218,6 +235,11 @@ bool PulseBackend::init(CrossfeedDSP* dsp, const std::string& target_sink, uint3
     if (active_target_.empty()) {
         std::cerr << "[crossfeed] Error: No suitable playback sink found." << std::endl;
         return false;
+    }
+
+    original_default_sink_ = default_sink;
+    if (original_default_sink_ == "crossfeed" || original_default_sink_ == "Crossfeed" || original_default_sink_.empty()) {
+        original_default_sink_ = active_target_;
     }
 
     std::cout << "[crossfeed] Active output target: " << active_target_ << std::endl;

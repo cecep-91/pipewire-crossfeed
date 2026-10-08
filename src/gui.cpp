@@ -98,6 +98,7 @@ public:
     GtkWidget* backend_val_label = nullptr;
     GtkWidget* target_val_label = nullptr;
     GtkWidget* latency_val_label = nullptr;
+    GtkApplication* g_app = nullptr;
 
     // Tray Indicator
     AppIndicator* indicator = nullptr;
@@ -541,7 +542,10 @@ public:
 
     static void on_tray_show_window(GtkWidget* /*item*/, gpointer user_data) {
         auto* app = static_cast<CrossfeedGuiApp*>(user_data);
-        gtk_window_present(GTK_WINDOW(app->window));
+        if (app->window) {
+            gtk_widget_show_all(app->window);
+            gtk_window_present(GTK_WINDOW(app->window));
+        }
     }
 
     static void on_tray_toggle(GtkWidget* /*item*/, gpointer user_data) {
@@ -570,7 +574,12 @@ public:
     static void on_tray_quit(GtkWidget* /*item*/, gpointer user_data) {
         auto* app = static_cast<CrossfeedGuiApp*>(user_data);
         app->stop_engine();
-        gtk_main_quit();
+        if (app->g_app) {
+            g_application_release(G_APPLICATION(app->g_app));
+            g_application_quit(G_APPLICATION(app->g_app));
+        } else {
+            gtk_main_quit();
+        }
     }
 
     void build_tray() {
@@ -635,8 +644,14 @@ public:
         app_indicator_set_menu(indicator, GTK_MENU(tray_menu));
     }
 
-    void build_ui() {
-        window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    void build_ui(GtkApplication* app_param = nullptr) {
+        g_app = app_param;
+        if (g_app) {
+            window = gtk_application_window_new(g_app);
+            g_application_hold(G_APPLICATION(g_app));
+        } else {
+            window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        }
         gtk_window_set_title(GTK_WINDOW(window), "Crossfeed Control");
         gtk_window_set_default_size(GTK_WINDOW(window), 520, 680);
         gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
@@ -1058,19 +1073,29 @@ public:
 
 CrossfeedGuiApp* CrossfeedGuiApp::instance = nullptr;
 
+static void on_app_activate(GApplication* g_app, gpointer user_data) {
+    auto* app = static_cast<CrossfeedGuiApp*>(user_data);
+    if (!app->window) {
+        app->build_ui(GTK_APPLICATION(g_app));
+    }
+    gtk_widget_show_all(app->window);
+    gtk_window_present(GTK_WINDOW(app->window));
+}
+
 int run_gui(int argc, char** argv) {
+    (void)argc;
     g_set_prgname("crossfeed");
     g_set_application_name("Crossfeed");
 
-    gtk_init(&argc, &argv);
-
+    GtkApplication* g_app = gtk_application_new("io.github.pipewire_crossfeed.App", G_APPLICATION_DEFAULT_FLAGS);
     CrossfeedGuiApp app;
-    app.build_ui();
+    CrossfeedGuiApp::instance = &app;
 
-    gtk_widget_show_all(app.window);
+    g_signal_connect(g_app, "activate", G_CALLBACK(on_app_activate), &app);
 
-    gtk_main();
-    return 0;
+    int status = g_application_run(G_APPLICATION(g_app), 1, argv);
+    g_object_unref(g_app);
+    return status;
 }
 
 } // namespace crossfeed
