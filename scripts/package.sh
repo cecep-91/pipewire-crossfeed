@@ -130,7 +130,8 @@ build_rpm() {
     mkdir -p "$build_dir/BUILD" "$build_dir/RPMS" "$build_dir/SOURCES" "$build_dir/SPECS" "$build_dir/SRPMS" "$build_dir/rpmdb"
     mkdir -p "$DIST_DIR"
 
-    local date_str="$(date +"%a %b %d %Y")"
+    local date_str
+    date_str=$(date +"%a %b %d %Y")
     local spec_file="$build_dir/SPECS/${PKG_NAME}.spec"
     cat > "$spec_file" <<EOF
 Name:           ${PKG_NAME}

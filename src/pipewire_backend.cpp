@@ -1,5 +1,4 @@
 #include "pipewire_backend.hpp"
-#include <spa/param/audio/dsp-utils.h>
 #include <spa/param/audio/format-utils.h>
 #include <iostream>
 #include <sstream>
