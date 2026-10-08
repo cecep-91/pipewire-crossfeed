@@ -35,12 +35,36 @@ SRCS = src/main.cpp \
 OBJS = $(SRCS:.cpp=.o)
 TARGET = bin/crossfeed
 
-.PHONY: all clean install uninstall bench deb rpm xbps pkg
+.PHONY: all clean install uninstall bench deb rpm xbps pkg check-deps
 
 all: $(TARGET)
 
+check-deps:
+	@if ! $(PKG_CONFIG) --exists gtk+-3.0 2>/dev/null; then \
+		echo "=================================================================" >&2; \
+		echo "ERROR: GTK 3 development headers (gtk/gtk.h) not found!" >&2; \
+		echo "" >&2; \
+		echo "KDE Plasma and minimal desktop systems do not include GTK headers by default." >&2; \
+		echo "Install the development packages for your distribution:" >&2; \
+		echo "" >&2; \
+		echo "  Fedora / RHEL:        sudo dnf install gtk3-devel libayatana-appindicator-gtk3-devel" >&2; \
+		echo "  Debian / Ubuntu:      sudo apt install libgtk-3-dev libayatana-appindicator3-dev" >&2; \
+		echo "  Arch Linux / Manjaro: sudo pacman -S gtk3 libayatana-appindicator" >&2; \
+		echo "  openSUSE:             sudo zypper install gtk3-devel libayatana-appindicator3-devel" >&2; \
+		echo "  Void Linux:           sudo xbps-install gtk+3-devel libayatana-appindicator-devel" >&2; \
+		echo "" >&2; \
+		echo "TIP: To avoid compiling, install the pre-built packages in dist/ directly:" >&2; \
+		echo "  Fedora / rpm-ostree:  sudo dnf install dist/*.rpm" >&2; \
+		echo "  Ubuntu / Debian:      sudo apt install dist/*.deb" >&2; \
+		echo "  Void Linux:           sudo xbps-install -R dist crossfeed" >&2; \
+		echo "=================================================================" >&2; \
+		exit 1; \
+	fi
+
 $(TARGET): $(OBJS) | bin
 	$(CXX) $(OBJS) $(ALL_LIBS) -o $@
+
+$(OBJS): | check-deps
 
 %.o: %.cpp
 	$(CXX) $(ALL_CFLAGS) -c $< -o $@

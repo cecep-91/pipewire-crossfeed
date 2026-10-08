@@ -19,9 +19,33 @@ LEGACY_FC_CONF="$HOME/.config/pipewire/filter-chain.conf.d/crossfeed.conf"
 have() { command -v "$1" >/dev/null 2>&1; }
 
 check_deps() {
-    if ! have g++ && ! have gcc && [ ! -f "$SRC_DIR/bin/crossfeed" ]; then
-        echo "error: g++ compiler not found (required to build standalone engine)." >&2
-        exit 1
+    if [ ! -f "$SRC_DIR/bin/crossfeed" ] || [ "${REBUILD:-0}" = "1" ]; then
+        if ! have g++ && ! have clang++ && ! have gcc; then
+            echo "error: C++ compiler (g++ or clang++) not found." >&2
+            exit 1
+        fi
+        if have pkg-config; then
+            if ! pkg-config --exists gtk+-3.0 2>/dev/null; then
+                echo "=================================================================" >&2
+                echo "ERROR: GTK 3 development headers (gtk/gtk.h) not found!" >&2
+                echo "" >&2
+                echo "KDE Plasma and minimal desktop systems do not include GTK headers by default." >&2
+                echo "Install the development packages for your distribution:" >&2
+                echo "" >&2
+                echo "  Fedora / RHEL:        sudo dnf install gtk3-devel libayatana-appindicator-gtk3-devel" >&2
+                echo "  Debian / Ubuntu:      sudo apt install libgtk-3-dev libayatana-appindicator3-dev" >&2
+                echo "  Arch Linux / Manjaro: sudo pacman -S gtk3 libayatana-appindicator" >&2
+                echo "  openSUSE:             sudo zypper install gtk3-devel libayatana-appindicator3-devel" >&2
+                echo "  Void Linux:           sudo xbps-install gtk+3-devel libayatana-appindicator-devel" >&2
+                echo "" >&2
+                echo "TIP: You can install pre-built packages directly without compiling:" >&2
+                echo "  Fedora:  sudo dnf install ./dist/*.rpm" >&2
+                echo "  Ubuntu:  sudo apt install ./dist/*.deb" >&2
+                echo "  Void:    sudo xbps-install -R dist crossfeed" >&2
+                echo "=================================================================" >&2
+                exit 1
+            fi
+        fi
     fi
 }
 
@@ -43,19 +67,29 @@ uninstall() {
     echo "    (Saved preferences in ~/.config/pipewire-crossfeed/ were preserved)"
 }
 
+REBUILD=0
 case "${1-}" in
     --uninstall|uninstall) uninstall; exit 0 ;;
+    --rebuild|rebuild) REBUILD=1 ;;
     "") ;;
-    *) echo "usage: $0 [--uninstall]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--rebuild|--uninstall]" >&2; exit 2 ;;
 esac
 
 echo "==> Checking dependencies"
 check_deps
 remove_legacy
 
-echo "==> Building standalone crossfeed application"
-if [ -f "$SRC_DIR/Makefile" ]; then
-    make -C "$SRC_DIR"
+echo "==> Preparing standalone crossfeed binary"
+if [ ! -f "$SRC_DIR/bin/crossfeed" ] || [ "$REBUILD" = "1" ]; then
+    echo "==> Building crossfeed from source"
+    if [ -f "$SRC_DIR/Makefile" ]; then
+        make -C "$SRC_DIR"
+    else
+        echo "error: binary $SRC_DIR/bin/crossfeed not found and Makefile missing." >&2
+        exit 1
+    fi
+else
+    echo "    (Using existing binary $SRC_DIR/bin/crossfeed)"
 fi
 
 echo "==> Installing single binary to $BIN_DIR"
