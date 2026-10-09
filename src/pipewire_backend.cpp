@@ -173,8 +173,15 @@ bool PipeWireBackend::load_null_sink() {
         return false;
     }
 
-    // 3. Move active sink inputs to crossfeed so ongoing audio immediately routes through filter
-    run_sys_cmd("pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; done");
+    // 3. Move active physical sink inputs to crossfeed so ongoing audio immediately routes through filter,
+    // preserving intermediate filter chains like EasyEffects.
+    std::string init_move_cmd =
+        "cf_idx=$(pactl list short sinks 2>/dev/null | grep -w 'crossfeed' | awk '{print $1}'); "
+        "ee_idx=$(pactl list short sinks 2>/dev/null | grep -w 'easyeffects_sink' | awk '{print $1}'); "
+        "pactl list short sink-inputs 2>/dev/null | while read -r id s_idx rest; do "
+        "  [ -n \"$id\" ] && [ -n \"$s_idx\" ] && [ \"$s_idx\" != \"$cf_idx\" ] && [ \"$s_idx\" != \"$ee_idx\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; "
+        "done";
+    run_sys_cmd(init_move_cmd);
 
     // 4. Set crossfeed as default sink
     run_sys_cmd("pactl set-default-sink crossfeed 2>/dev/null");
@@ -182,7 +189,7 @@ bool PipeWireBackend::load_null_sink() {
 }
 
 void PipeWireBackend::unload_null_sink() {
-    // 1. Restore original default sink and move active streams back
+    // 1. Restore original default sink and move active crossfeed streams back
     std::string restore_sink = original_default_sink_;
     if (restore_sink.empty() || restore_sink == "crossfeed" || restore_sink == "Crossfeed") {
         restore_sink = active_target_sink_;
@@ -192,7 +199,11 @@ void PipeWireBackend::unload_null_sink() {
     }
 
     if (!restore_sink.empty() && restore_sink != "crossfeed" && restore_sink != "Crossfeed") {
-        std::string move_cmd = "pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" \"" + restore_sink + "\" 2>/dev/null; done";
+        std::string move_cmd =
+            "cf_idx=$(pactl list short sinks 2>/dev/null | grep -w 'crossfeed' | awk '{print $1}'); "
+            "pactl list short sink-inputs 2>/dev/null | while read -r id s_idx rest; do "
+            "  [ -n \"$id\" ] && [ -n \"$s_idx\" ] && [ \"$s_idx\" = \"$cf_idx\" ] && pactl move-sink-input \"$id\" \"" + restore_sink + "\" 2>/dev/null; "
+            "done";
         run_sys_cmd(move_cmd);
         std::string def_cmd = "pactl set-default-sink \"" + restore_sink + "\" 2>/dev/null";
         run_sys_cmd(def_cmd);
@@ -501,6 +512,47 @@ void PipeWireBackend::link_manager_loop() {
         }
         if (!out_fr_linked) {
             safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_);
+        }
+
+        // 3. Auto-reroute any stream playing directly to target physical sink into crossfeed virtual sink
+        bool rogue_target_found = false;
+        if (!target_playback_fl_.empty()) {
+            auto tgt_fl_it = graph.find(target_playback_fl_);
+            if (tgt_fl_it != graph.end()) {
+                for (const auto& src : tgt_fl_it->second.inputs) {
+                    if (src.find("crossfeed") == std::string::npos && is_valid_port_name(src)) {
+                        safe_pw_link(src, target_playback_fl_, true);
+                        safe_pw_link(src, "crossfeed:playback_FL");
+                        rogue_target_found = true;
+                    }
+                }
+            }
+        }
+
+        if (!target_playback_fr_.empty()) {
+            auto tgt_fr_it = graph.find(target_playback_fr_);
+            if (tgt_fr_it != graph.end()) {
+                for (const auto& src : tgt_fr_it->second.inputs) {
+                    if (src.find("crossfeed") == std::string::npos && is_valid_port_name(src)) {
+                        safe_pw_link(src, target_playback_fr_, true);
+                        safe_pw_link(src, "crossfeed:playback_FR");
+                        rogue_target_found = true;
+                    }
+                }
+            }
+        }
+
+        // If rogue streams bypassed Crossfeed to play directly to physical sink,
+        // also instruct PulseAudio / WirePlumber to migrate sink-inputs bound to physical sinks to crossfeed
+        // so WirePlumber updates its stream restore preference.
+        if (rogue_target_found) {
+            std::string move_cmd =
+                "cf_idx=$(pactl list short sinks 2>/dev/null | grep -w 'crossfeed' | awk '{print $1}'); "
+                "ee_idx=$(pactl list short sinks 2>/dev/null | grep -w 'easyeffects_sink' | awk '{print $1}'); "
+                "pactl list short sink-inputs 2>/dev/null | while read -r id s_idx rest; do "
+                "  [ -n \"$id\" ] && [ -n \"$s_idx\" ] && [ \"$s_idx\" != \"$cf_idx\" ] && [ \"$s_idx\" != \"$ee_idx\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; "
+                "done";
+            run_sys_cmd(move_cmd);
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
