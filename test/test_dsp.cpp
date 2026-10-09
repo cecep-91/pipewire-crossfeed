@@ -1,5 +1,6 @@
 #include "dsp.hpp"
 #include "config.hpp"
+#include "presets.hpp"
 
 #include <iostream>
 #include <cmath>
@@ -464,6 +465,42 @@ static void test_lockfree_concurrent_processing() {
               << blocks_processed.load() << " audio blocks with no data races or invalid floats" << std::endl;
 }
 
+static void test_presets() {
+    std::cout << "[TEST] Presets Lookup & Detection..." << std::endl;
+
+    // 1. find_preset lookup
+    assert(find_preset("meier") != nullptr);
+    assert(std::string(find_preset("meier")->name) == "Jan Meier");
+    assert(find_preset("Jan Meier") != nullptr);
+    assert(find_preset("chumoy") != nullptr);
+    assert(find_preset("bs2b") != nullptr);
+    assert(std::string(find_preset("bs2b")->name) == "Bauer BS2B");
+    assert(find_preset("linkwitz") != nullptr);
+    assert(find_preset("studio") != nullptr);
+    assert(find_preset("Studio 30°") != nullptr);
+    assert(find_preset("unknown_nonexistent") == nullptr);
+
+    // 2. detect_active_preset matching
+    const auto* p_meier = detect_active_preset(-9.5f, 650.0f, 280.0f, 1500.0f, -1.5f, 3200.0f, true);
+    assert(p_meier != nullptr && std::string(p_meier->id) == "meier");
+
+    // Tolerant matching (within small float tolerances)
+    const auto* p_meier_tol = detect_active_preset(-9.52f, 651.0f, 281.0f, 1505.0f, -1.51f, 3210.0f, true);
+    assert(p_meier_tol != nullptr && std::string(p_meier_tol->id) == "meier");
+
+    // Bauer BS2B
+    const auto* p_bs2b = detect_active_preset(-4.5f, 700.0f, 350.0f, 1200.0f, -2.5f, 2500.0f, true);
+    assert(p_bs2b != nullptr && std::string(p_bs2b->id) == "bs2b");
+
+    // Advanced effects disabled -> must return nullptr (Pure Crossfeed)
+    assert(detect_active_preset(-9.5f, 650.0f, 280.0f, 1500.0f, -1.5f, 3200.0f, false) == nullptr);
+
+    // Custom values differing from all presets -> nullptr
+    assert(detect_active_preset(-20.0f, 400.0f, 100.0f, 800.0f, 0.0f, 1500.0f, true) == nullptr);
+
+    std::cout << "  PASS: Preset lookup, ID matching, and tolerance detection verified" << std::endl;
+}
+
 int main() {
     // Enable FTZ/DAZ mode if hardware supports it (standard for audio DSP)
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -487,6 +524,7 @@ int main() {
     test_crossfeed_dsp_stability();
     test_config_state_roundtrip();
     test_lockfree_concurrent_processing();
+    test_presets();
 
     std::cout << "========================================" << std::endl;
     std::cout << "All DSP and core characterization tests passed!" << std::endl;

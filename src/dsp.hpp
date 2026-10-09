@@ -11,7 +11,7 @@ namespace crossfeed {
 constexpr float DEFAULT_LEVEL_DB = -10.0f;
 constexpr float DEFAULT_FREQ_HZ = 700.0f;
 constexpr float MIN_LEVEL_DB = -30.0f;
-constexpr float MAX_LEVEL_DB = -6.0f;
+constexpr float MAX_LEVEL_DB = -3.0f;
 constexpr float MIN_FREQ_HZ = 200.0f;
 constexpr float MAX_FREQ_HZ = 2000.0f;
 constexpr float FULL_GAIN2 = 0.316f;

@@ -2,6 +2,7 @@
 #include "ipc.hpp"
 #include "config.hpp"
 #include "dsp.hpp"
+#include "presets.hpp"
 #include <gtk/gtk.h>
 #include <libayatana-appindicator/app-indicator.h>
 #include <string>
@@ -20,24 +21,6 @@
 
 namespace crossfeed {
 
-struct CrossfeedPreset {
-    const char* name;
-    const char* description;
-    float level_db;
-    float freq_hz;
-    float delay_us;
-    float phase_apf_hz;
-    float center_trim_db;
-    float shadow_hz;
-};
-
-static const CrossfeedPreset g_presets[] = {
-    {"Jan Meier", "Jan Meier (Corda) — natural presentation for fatigue-free listening", -9.5f, 650.0f, 280.0f, 1500.0f, -1.5f, 3200.0f},
-    {"Chu Moy", "Chu Moy (HeadWize) — classic analog RC circuit crossfeed emulation", -6.0f, 700.0f, 260.0f, 2000.0f, -2.0f, 2800.0f},
-    {"Bauer BS2B", "Bauer BS2B — stereophonic-to-binaural high blend simulation", -4.5f, 700.0f, 350.0f, 1200.0f, -2.5f, 2500.0f},
-    {"Linkwitz", "Siegfried Linkwitz — loudspeaker simulation for wide spatial staging", -7.0f, 1200.0f, 220.0f, 1600.0f, -1.8f, 4000.0f},
-    {"Studio 30°", "Natural Studio — simulates near-field stereo monitors at 30° triangle", -8.0f, 850.0f, 250.0f, 1800.0f, -1.5f, 3500.0f},
-};
 
 struct GuiEngineState {
     bool running = false;
@@ -101,10 +84,16 @@ public:
 
     // Status display widgets
     GtkWidget* status_dot_label = nullptr;
+    GtkWidget* preset_val_label = nullptr;
     GtkWidget* backend_val_label = nullptr;
     GtkWidget* target_val_label = nullptr;
     GtkWidget* latency_val_label = nullptr;
     GtkApplication* g_app = nullptr;
+
+    // Header menu and presets tracking
+    GtkWidget* menu_button = nullptr;
+    std::vector<std::pair<const CrossfeedPreset*, GtkWidget*>> preset_buttons;
+    guint slider_ipc_timeout_id = 0;
 
     // Tray Indicator
     AppIndicator* indicator = nullptr;
@@ -275,9 +264,111 @@ public:
         start_engine();
     }
 
+    void send_current_params_to_engine() {
+        bool en = master_switch ? gtk_switch_get_active(GTK_SWITCH(master_switch)) : state.enabled;
+        float lvl = static_cast<float>(gtk_adjustment_get_value(level_adj));
+        float frq = static_cast<float>(gtk_adjustment_get_value(freq_adj));
+        float del = delay_adj ? static_cast<float>(gtk_adjustment_get_value(delay_adj)) : state.delay_us;
+        float phs = phase_adj ? static_cast<float>(gtk_adjustment_get_value(phase_adj)) : state.phase_apf_hz;
+        float trm = trim_adj ? static_cast<float>(gtk_adjustment_get_value(trim_adj)) : state.center_trim_db;
+        float shd = shadow_adj ? static_cast<float>(gtk_adjustment_get_value(shadow_adj)) : state.shadow_hz;
+        bool adv = effects_switch ? gtk_switch_get_active(GTK_SWITCH(effects_switch)) : state.advanced_effects;
+
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(1);
+        ss << "SET enabled=" << (en ? "1" : "0")
+           << " level=" << lvl
+           << std::setprecision(0)
+           << " freq=" << frq
+           << std::setprecision(1)
+           << " delay=" << del
+           << std::setprecision(0)
+           << " phase=" << phs
+           << std::setprecision(1)
+           << " trim=" << trm
+           << std::setprecision(0)
+           << " shadow=" << shd
+           << " advanced=" << (adv ? "1" : "0");
+        std::string resp;
+        IpcClient::send_command(Config::get_socket_path(), ss.str(), resp);
+    }
+
+    static gboolean on_slider_debounce_timeout(gpointer user_data) {
+        auto* app = static_cast<CrossfeedGuiApp*>(user_data);
+        app->slider_ipc_timeout_id = 0;
+        app->send_current_params_to_engine();
+        return G_SOURCE_REMOVE;
+    }
+
+    void update_preset_and_subtitle() {
+        const auto* active_p = detect_active_preset(
+            state.level_db, state.freq_hz, state.delay_us,
+            state.phase_apf_hz, state.center_trim_db, state.shadow_hz,
+            state.advanced_effects
+        );
+
+        for (auto& item : preset_buttons) {
+            if (active_p && item.first == active_p) {
+                gtk_style_context_add_class(gtk_widget_get_style_context(item.second), "suggested-action");
+            } else {
+                gtk_style_context_remove_class(gtk_widget_get_style_context(item.second), "suggested-action");
+            }
+        }
+
+        if (preset_desc_label) {
+            if (active_p) {
+                gtk_label_set_text(GTK_LABEL(preset_desc_label), active_p->description);
+            } else if (!state.advanced_effects) {
+                gtk_label_set_text(GTK_LABEL(preset_desc_label), "Pure Crossfeed active (Classic low-pass stereo blend only)");
+            } else {
+                gtk_label_set_text(GTK_LABEL(preset_desc_label), "Custom acoustic parameters");
+            }
+        }
+
+        if (preset_val_label) {
+            gtk_label_set_text(GTK_LABEL(preset_val_label), active_p ? active_p->name : "Custom");
+        }
+
+        std::ostringstream sub;
+        sub << std::fixed << std::setprecision(1);
+        if (state.enabled) {
+            std::string preset_badge = active_p ? ("Preset: " + std::string(active_p->name)) : "Custom";
+            if (state.advanced_effects) {
+                sub << state.level_db << " dB · " << std::setprecision(0) << state.freq_hz << " Hz · " << state.delay_us << " µs (" << preset_badge << ")";
+            } else {
+                sub << state.level_db << " dB · " << std::setprecision(0) << state.freq_hz << " Hz (Pure Crossfeed)";
+            }
+            if (!state.target.empty()) {
+                std::string tgt_short = state.target;
+                size_t last_dot = tgt_short.find_last_of('.');
+                if (last_dot != std::string::npos && last_dot + 1 < tgt_short.size()) {
+                    tgt_short = tgt_short.substr(last_dot + 1);
+                }
+                sub << " · " << tgt_short;
+            }
+        } else {
+            sub << "Bypassed (Passthrough)";
+        }
+        gtk_header_bar_set_subtitle(GTK_HEADER_BAR(header_bar), sub.str().c_str());
+    }
+
     void apply_params(bool enabled, float level_db, float freq_hz,
                       float delay_us, float phase_apf_hz, float center_trim_db,
                       float shadow_hz, bool advanced_effects) {
+        if (slider_ipc_timeout_id != 0) {
+            g_source_remove(slider_ipc_timeout_id);
+            slider_ipc_timeout_id = 0;
+        }
+
+        state.enabled = enabled;
+        state.level_db = level_db;
+        state.freq_hz = freq_hz;
+        state.delay_us = delay_us;
+        state.phase_apf_hz = phase_apf_hz;
+        state.center_trim_db = center_trim_db;
+        state.shadow_hz = shadow_hz;
+        state.advanced_effects = advanced_effects;
+
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(1);
         ss << "SET enabled=" << (enabled ? "1" : "0")
@@ -295,10 +386,19 @@ public:
            << " advanced=" << (advanced_effects ? "1" : "0");
         std::string resp;
         IpcClient::send_command(Config::get_socket_path(), ss.str(), resp);
-        refresh_from_engine();
+        update_ui();
+    }
+
+    void reset_to_defaults() {
+        apply_params(true, DEFAULT_LEVEL_DB, DEFAULT_FREQ_HZ, DEFAULT_DELAY_US,
+                     DEFAULT_PHASE_APF_HZ, DEFAULT_CENTER_TRIM_DB, DEFAULT_SHADOW_HZ, true);
     }
 
     void toggle_enabled() {
+        if (slider_ipc_timeout_id != 0) {
+            g_source_remove(slider_ipc_timeout_id);
+            slider_ipc_timeout_id = 0;
+        }
         std::string resp;
         IpcClient::send_command(Config::get_socket_path(), "TOGGLE", resp);
         refresh_from_engine();
@@ -370,27 +470,8 @@ public:
 
             gtk_widget_set_sensitive(controls_box, state.enabled);
 
-            // Subtitle
-            std::ostringstream sub;
-            sub << std::fixed << std::setprecision(1);
-            if (state.enabled) {
-                if (state.advanced_effects) {
-                    sub << state.level_db << " dB · " << std::setprecision(0) << state.freq_hz << " Hz · " << state.delay_us << " µs (All Effects)";
-                } else {
-                    sub << state.level_db << " dB · " << std::setprecision(0) << state.freq_hz << " Hz (Pure Crossfeed)";
-                }
-                if (!state.target.empty()) {
-                    std::string tgt_short = state.target;
-                    size_t last_dot = tgt_short.find_last_of('.');
-                    if (last_dot != std::string::npos && last_dot + 1 < tgt_short.size()) {
-                        tgt_short = tgt_short.substr(last_dot + 1);
-                    }
-                    sub << " · " << tgt_short;
-                }
-            } else {
-                sub << "Bypassed (Passthrough)";
-            }
-            gtk_header_bar_set_subtitle(GTK_HEADER_BAR(header_bar), sub.str().c_str());
+            // Update preset indicator, buttons highlight, and header subtitle
+            update_preset_and_subtitle();
 
             // Details box
             if (status_dot_label) {
@@ -458,7 +539,7 @@ public:
     // Callbacks
     static gboolean on_poll_timer(gpointer user_data) {
         auto* app = static_cast<CrossfeedGuiApp*>(user_data);
-        if (!app->suppress_events) {
+        if (!app->suppress_events && app->slider_ipc_timeout_id == 0) {
             GuiEngineState new_st;
             app->query_engine_state(new_st);
             if (new_st.running != app->state.running ||
@@ -514,8 +595,21 @@ public:
     static void on_any_slider_changed(GtkAdjustment* /*adj*/, gpointer user_data) {
         auto* app = static_cast<CrossfeedGuiApp*>(user_data);
         if (app->suppress_events) return;
-        bool en = gtk_switch_get_active(GTK_SWITCH(app->master_switch));
-        app->apply_current_ui_params(en);
+
+        // Immediately update local state & UI labels for 60fps buttery responsiveness
+        app->state.level_db = static_cast<float>(gtk_adjustment_get_value(app->level_adj));
+        app->state.freq_hz = static_cast<float>(gtk_adjustment_get_value(app->freq_adj));
+        if (app->delay_adj) app->state.delay_us = static_cast<float>(gtk_adjustment_get_value(app->delay_adj));
+        if (app->phase_adj) app->state.phase_apf_hz = static_cast<float>(gtk_adjustment_get_value(app->phase_adj));
+        if (app->trim_adj) app->state.center_trim_db = static_cast<float>(gtk_adjustment_get_value(app->trim_adj));
+        if (app->shadow_adj) app->state.shadow_hz = static_cast<float>(gtk_adjustment_get_value(app->shadow_adj));
+
+        app->update_preset_and_subtitle();
+
+        // Debounce IPC write: 30ms
+        if (app->slider_ipc_timeout_id == 0) {
+            app->slider_ipc_timeout_id = g_timeout_add(30, on_slider_debounce_timeout, app);
+        }
     }
 
     static void on_preset_button_clicked(GtkWidget* /*button*/, gpointer user_data) {
@@ -525,10 +619,41 @@ public:
         app->apply_params(en, preset->level_db, preset->freq_hz,
                           preset->delay_us, preset->phase_apf_hz,
                           preset->center_trim_db, preset->shadow_hz,
-                          app->state.advanced_effects);
-        if (app->preset_desc_label) {
-            gtk_label_set_text(GTK_LABEL(app->preset_desc_label), preset->description);
-        }
+                          true);
+    }
+
+    static void on_reset_defaults_clicked(GtkWidget* /*widget*/, gpointer user_data) {
+        auto* app = static_cast<CrossfeedGuiApp*>(user_data);
+        app->reset_to_defaults();
+    }
+
+    static void on_about_clicked(GtkWidget* /*widget*/, gpointer user_data) {
+        auto* app = static_cast<CrossfeedGuiApp*>(user_data);
+        GtkWidget* dialog = gtk_about_dialog_new();
+        gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(app->window));
+        gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
+        gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "PipeWire Crossfeed");
+        gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), "2.2.0");
+        gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog),
+            "Standalone ultra-low-latency headphone crossfeed audio processor.\n"
+            "Reduces headphone listening fatigue and spatializes stereo imaging.");
+        gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(dialog), "https://github.com/ikuu/pipewire-crossfeed");
+        gtk_about_dialog_set_website_label(GTK_ABOUT_DIALOG(dialog), "GitHub Repository");
+        gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dialog), GTK_LICENSE_MIT_X11);
+        gtk_about_dialog_set_logo_icon_name(GTK_ABOUT_DIALOG(dialog), "audio-headphones");
+
+        const char* authors[] = {
+            "Jan Meier (Corda natural crossfeed filter)",
+            "Chu Moy (HeadWize analog crossfeed)",
+            "Siegfried Linkwitz (Acoustic crossfeed research)",
+            "Bauer (Stereophonic-to-Binaural BS2B DSP)",
+            "PipeWire Crossfeed contributors",
+            nullptr
+        };
+        gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
+
+        g_signal_connect(dialog, "response", G_CALLBACK(gtk_widget_destroy), nullptr);
+        gtk_widget_show_all(dialog);
     }
 
     static void on_start_engine_clicked(GtkWidget* /*button*/, gpointer user_data) {
@@ -577,8 +702,12 @@ public:
         }
     }
 
-    static void on_tray_quit(GtkWidget* /*item*/, gpointer user_data) {
+    static void on_app_quit(GtkWidget* /*item*/, gpointer user_data) {
         auto* app = static_cast<CrossfeedGuiApp*>(user_data);
+        if (app->slider_ipc_timeout_id != 0) {
+            g_source_remove(app->slider_ipc_timeout_id);
+            app->slider_ipc_timeout_id = 0;
+        }
         app->stop_engine();
         if (app->g_app) {
             g_application_release(G_APPLICATION(app->g_app));
@@ -643,7 +772,7 @@ public:
         gtk_menu_shell_append(GTK_MENU_SHELL(tray_menu), sep3);
 
         GtkWidget* item_quit = gtk_menu_item_new_with_label("Quit Crossfeed");
-        g_signal_connect(item_quit, "activate", G_CALLBACK(on_tray_quit), this);
+        g_signal_connect(item_quit, "activate", G_CALLBACK(on_app_quit), this);
         gtk_menu_shell_append(GTK_MENU_SHELL(tray_menu), item_quit);
 
         gtk_widget_show_all(tray_menu);
@@ -674,9 +803,53 @@ public:
         gtk_header_bar_set_subtitle(GTK_HEADER_BAR(header_bar), "Initializing...");
         gtk_window_set_titlebar(GTK_WINDOW(window), header_bar);
 
+        // Header bar menu button (☰)
+        menu_button = gtk_menu_button_new();
+        GtkWidget* menu_icon = gtk_image_new_from_icon_name("open-menu-symbolic", GTK_ICON_SIZE_BUTTON);
+        gtk_button_set_image(GTK_BUTTON(menu_button), menu_icon);
+        gtk_widget_set_tooltip_text(menu_button, "Menu");
+
+        GtkWidget* app_menu = gtk_menu_new();
+
+        GtkWidget* m_reset = gtk_menu_item_new_with_label("Reset to Defaults");
+        g_signal_connect(m_reset, "activate", G_CALLBACK(on_reset_defaults_clicked), this);
+        gtk_menu_shell_append(GTK_MENU_SHELL(app_menu), m_reset);
+
+        GtkWidget* m_presets_item = gtk_menu_item_new_with_label("Presets");
+        GtkWidget* m_presets_menu = gtk_menu_new();
+        gtk_menu_item_set_submenu(GTK_MENU_ITEM(m_presets_item), m_presets_menu);
+        for (const auto& preset : g_presets) {
+            std::ostringstream ss;
+            ss << preset.name << " (" << std::fixed << std::setprecision(0) << preset.freq_hz << " Hz, "
+               << std::setprecision(1) << preset.level_db << " dB, "
+               << std::setprecision(0) << preset.delay_us << " µs)";
+            GtkWidget* it = gtk_menu_item_new_with_label(ss.str().c_str());
+            g_signal_connect(it, "activate", G_CALLBACK(on_preset_button_clicked), const_cast<CrossfeedPreset*>(&preset));
+            gtk_menu_shell_append(GTK_MENU_SHELL(m_presets_menu), it);
+        }
+        gtk_menu_shell_append(GTK_MENU_SHELL(app_menu), m_presets_item);
+
+        gtk_menu_shell_append(GTK_MENU_SHELL(app_menu), gtk_separator_menu_item_new());
+
+        GtkWidget* m_about = gtk_menu_item_new_with_label("About Crossfeed");
+        g_signal_connect(m_about, "activate", G_CALLBACK(on_about_clicked), this);
+        gtk_menu_shell_append(GTK_MENU_SHELL(app_menu), m_about);
+
+        gtk_menu_shell_append(GTK_MENU_SHELL(app_menu), gtk_separator_menu_item_new());
+
+        GtkWidget* m_quit = gtk_menu_item_new_with_label("Quit Crossfeed");
+        g_signal_connect(m_quit, "activate", G_CALLBACK(on_app_quit), this);
+        gtk_menu_shell_append(GTK_MENU_SHELL(app_menu), m_quit);
+
+        gtk_widget_show_all(app_menu);
+        gtk_menu_button_set_popup(GTK_MENU_BUTTON(menu_button), app_menu);
+
+        gtk_header_bar_pack_end(GTK_HEADER_BAR(header_bar), menu_button);
+
         // Master bypass switch in header bar
         master_switch = gtk_switch_new();
         gtk_widget_set_valign(master_switch, GTK_ALIGN_CENTER);
+        gtk_widget_set_tooltip_text(master_switch, "Master Filter Switch: Enable crossfeed processing or bypass for direct passthrough.");
         g_signal_connect(master_switch, "state-set", G_CALLBACK(on_switch_state_set), this);
         gtk_header_bar_pack_end(GTK_HEADER_BAR(header_bar), master_switch);
 
@@ -707,8 +880,9 @@ public:
             gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
             gtk_box_pack_start(GTK_BOX(row), lbl, TRUE, TRUE, 0);
 
-            level_adj = gtk_adjustment_new(-10.0, -30.0, -6.0, 0.5, 2.0, 0.0);
+            level_adj = gtk_adjustment_new(-10.0, -30.0, -3.0, 0.5, 2.0, 0.0);
             level_spin = gtk_spin_button_new(level_adj, 0.5, 1);
+            gtk_widget_set_tooltip_text(level_spin, "Crossfeed blend level in dB");
             protect_from_accidental_scroll(level_spin, scrolled_window);
             gtk_box_pack_end(GTK_BOX(row), level_spin, FALSE, FALSE, 0);
             gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
@@ -722,6 +896,7 @@ public:
             gtk_scale_set_digits(GTK_SCALE(level_scale), 1);
             gtk_scale_set_draw_value(GTK_SCALE(level_scale), FALSE);
             gtk_scale_add_mark(GTK_SCALE(level_scale), -10.0, GTK_POS_BOTTOM, "Default");
+            gtk_widget_set_tooltip_text(level_scale, "Crossfeed Blend Level: Controls volume of stereo bleed into opposite ear (-30 to -3 dB, default -10 dB).");
             protect_from_accidental_scroll(level_scale, scrolled_window);
             gtk_box_pack_start(GTK_BOX(sec), level_scale, FALSE, FALSE, 0);
 
@@ -740,6 +915,7 @@ public:
 
             freq_adj = gtk_adjustment_new(700.0, 200.0, 2000.0, 10.0, 50.0, 0.0);
             freq_spin = gtk_spin_button_new(freq_adj, 10.0, 0);
+            gtk_widget_set_tooltip_text(freq_spin, "Crossover cutoff frequency in Hz");
             protect_from_accidental_scroll(freq_spin, scrolled_window);
             gtk_box_pack_end(GTK_BOX(row), freq_spin, FALSE, FALSE, 0);
             gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
@@ -753,6 +929,7 @@ public:
             gtk_scale_set_digits(GTK_SCALE(freq_scale), 0);
             gtk_scale_set_draw_value(GTK_SCALE(freq_scale), FALSE);
             gtk_scale_add_mark(GTK_SCALE(freq_scale), 700.0, GTK_POS_BOTTOM, "700 Hz");
+            gtk_widget_set_tooltip_text(freq_scale, "Crossover Cutoff: Low-pass filter threshold for acoustic diffraction wrapping around head (~700 Hz default).");
             protect_from_accidental_scroll(freq_scale, scrolled_window);
             gtk_box_pack_start(GTK_BOX(sec), freq_scale, FALSE, FALSE, 0);
 
@@ -799,6 +976,7 @@ public:
 
                 effects_switch = gtk_switch_new();
                 gtk_widget_set_valign(effects_switch, GTK_ALIGN_CENTER);
+                gtk_widget_set_tooltip_text(effects_switch, "Toggle between Full Spatial Simulation (ITD, Phase, Shadow, Trim) and Pure Crossfeed.");
                 gtk_switch_set_active(GTK_SWITCH(effects_switch), state.advanced_effects);
                 g_signal_connect(effects_switch, "state-set", G_CALLBACK(on_effects_switch_set), this);
                 gtk_box_pack_end(GTK_BOX(switch_row), effects_switch, FALSE, FALSE, 0);
@@ -817,16 +995,26 @@ public:
             // --- Presets Section (Shown only in this expanded menu!) ---
             {
                 GtkWidget* p_section = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+                GtkWidget* p_header_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
                 GtkWidget* p_title = gtk_label_new(nullptr);
                 gtk_label_set_markup(GTK_LABEL(p_title), "<b>Acoustic Emulation Presets</b>");
                 gtk_label_set_xalign(GTK_LABEL(p_title), 0.0);
-                gtk_box_pack_start(GTK_BOX(p_section), p_title, FALSE, FALSE, 0);
+                gtk_box_pack_start(GTK_BOX(p_header_box), p_title, TRUE, TRUE, 0);
+
+                GtkWidget* btn_reset_tuning = gtk_button_new_with_label("Reset to Defaults");
+                gtk_widget_set_tooltip_text(btn_reset_tuning, "Reset all acoustic parameters back to defaults (-10 dB, 700 Hz, 280 µs)");
+                g_signal_connect(btn_reset_tuning, "clicked", G_CALLBACK(on_reset_defaults_clicked), this);
+                gtk_box_pack_end(GTK_BOX(p_header_box), btn_reset_tuning, FALSE, FALSE, 0);
+                gtk_box_pack_start(GTK_BOX(p_section), p_header_box, FALSE, FALSE, 0);
 
                 GtkWidget* btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+                preset_buttons.clear();
                 for (const auto& preset : g_presets) {
                     GtkWidget* btn = gtk_button_new_with_label(preset.name);
+                    gtk_widget_set_tooltip_text(btn, preset.description);
                     g_signal_connect(btn, "clicked", G_CALLBACK(on_preset_button_clicked), const_cast<CrossfeedPreset*>(&preset));
                     gtk_box_pack_start(GTK_BOX(btn_box), btn, TRUE, TRUE, 0);
+                    preset_buttons.emplace_back(&preset, btn);
                 }
                 gtk_box_pack_start(GTK_BOX(p_section), btn_box, FALSE, FALSE, 0);
 
@@ -850,6 +1038,7 @@ public:
 
                 delay_adj = gtk_adjustment_new(280.0, 0.0, 800.0, 10.0, 50.0, 0.0);
                 delay_spin = gtk_spin_button_new(delay_adj, 10.0, 0);
+                gtk_widget_set_tooltip_text(delay_spin, "Interaural Time Difference in microseconds");
                 protect_from_accidental_scroll(delay_spin, scrolled_window);
                 gtk_box_pack_end(GTK_BOX(row), delay_spin, FALSE, FALSE, 0);
                 gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
@@ -865,6 +1054,7 @@ public:
                 gtk_scale_add_mark(GTK_SCALE(delay_scale), 260.0, GTK_POS_BOTTOM, "Chu Moy");
                 gtk_scale_add_mark(GTK_SCALE(delay_scale), 280.0, GTK_POS_BOTTOM, "Meier");
                 gtk_scale_add_mark(GTK_SCALE(delay_scale), 350.0, GTK_POS_BOTTOM, "BS2B");
+                gtk_widget_set_tooltip_text(delay_scale, "Interaural Time Difference (ITD): Acoustic travel time delay (~200 to 400 µs) to farther ear.");
                 protect_from_accidental_scroll(delay_scale, scrolled_window);
                 gtk_box_pack_start(GTK_BOX(sec), delay_scale, FALSE, FALSE, 0);
 
@@ -883,6 +1073,7 @@ public:
 
                 phase_adj = gtk_adjustment_new(1500.0, 200.0, 4000.0, 50.0, 200.0, 0.0);
                 phase_spin = gtk_spin_button_new(phase_adj, 50.0, 0);
+                gtk_widget_set_tooltip_text(phase_spin, "Phase alignment all-pass frequency in Hz");
                 protect_from_accidental_scroll(phase_spin, scrolled_window);
                 gtk_box_pack_end(GTK_BOX(row), phase_spin, FALSE, FALSE, 0);
                 gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
@@ -896,6 +1087,7 @@ public:
                 gtk_scale_set_digits(GTK_SCALE(phase_scale), 0);
                 gtk_scale_set_draw_value(GTK_SCALE(phase_scale), FALSE);
                 gtk_scale_add_mark(GTK_SCALE(phase_scale), 1500.0, GTK_POS_BOTTOM, "1500 Hz");
+                gtk_widget_set_tooltip_text(phase_scale, "Phase Alignment All-Pass Filter: Prevents acoustic cancellation / comb filtering and preserves rich bass.");
                 protect_from_accidental_scroll(phase_scale, scrolled_window);
                 gtk_box_pack_start(GTK_BOX(sec), phase_scale, FALSE, FALSE, 0);
 
@@ -914,6 +1106,7 @@ public:
 
                 trim_adj = gtk_adjustment_new(-1.5, -6.0, 0.0, 0.5, 1.0, 0.0);
                 trim_spin = gtk_spin_button_new(trim_adj, 0.5, 1);
+                gtk_widget_set_tooltip_text(trim_spin, "Center summing gain trim in dB");
                 protect_from_accidental_scroll(trim_spin, scrolled_window);
                 gtk_box_pack_end(GTK_BOX(row), trim_spin, FALSE, FALSE, 0);
                 gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
@@ -927,6 +1120,7 @@ public:
                 gtk_scale_set_digits(GTK_SCALE(trim_scale), 1);
                 gtk_scale_set_draw_value(GTK_SCALE(trim_scale), FALSE);
                 gtk_scale_add_mark(GTK_SCALE(trim_scale), -1.5, GTK_POS_BOTTOM, "-1.5 dB");
+                gtk_widget_set_tooltip_text(trim_scale, "Center Summing Trim: Attenuates center channel buildup caused by acoustic L+R coherent summing (-1.5 dB default).");
                 protect_from_accidental_scroll(trim_scale, scrolled_window);
                 gtk_box_pack_start(GTK_BOX(sec), trim_scale, FALSE, FALSE, 0);
 
@@ -945,6 +1139,7 @@ public:
 
                 shadow_adj = gtk_adjustment_new(3000.0, 1000.0, 8000.0, 100.0, 500.0, 0.0);
                 shadow_spin = gtk_spin_button_new(shadow_adj, 100.0, 0);
+                gtk_widget_set_tooltip_text(shadow_spin, "Head acoustic shadow cutoff in Hz");
                 protect_from_accidental_scroll(shadow_spin, scrolled_window);
                 gtk_box_pack_end(GTK_BOX(row), shadow_spin, FALSE, FALSE, 0);
                 gtk_box_pack_start(GTK_BOX(sec), row, FALSE, FALSE, 0);
@@ -958,6 +1153,7 @@ public:
                 gtk_scale_set_digits(GTK_SCALE(shadow_scale), 0);
                 gtk_scale_set_draw_value(GTK_SCALE(shadow_scale), FALSE);
                 gtk_scale_add_mark(GTK_SCALE(shadow_scale), 3000.0, GTK_POS_BOTTOM, "3000 Hz");
+                gtk_widget_set_tooltip_text(shadow_scale, "Head Shadow Cutoff Filter: Simulates high-frequency attenuation caused by head absorption and acoustic shadowing (3000 Hz default).");
                 protect_from_accidental_scroll(shadow_scale, scrolled_window);
                 gtk_box_pack_start(GTK_BOX(sec), shadow_scale, FALSE, FALSE, 0);
 
@@ -986,30 +1182,38 @@ public:
             gtk_grid_attach(GTK_GRID(grid), l_st, 0, 0, 1, 1);
             gtk_grid_attach(GTK_GRID(grid), status_dot_label, 1, 0, 1, 1);
 
-            // Row 1: Backend
+            // Row 1: Active Preset
+            GtkWidget* l_pr = gtk_label_new("Preset:");
+            gtk_label_set_xalign(GTK_LABEL(l_pr), 0.0);
+            preset_val_label = gtk_label_new("Custom");
+            gtk_label_set_xalign(GTK_LABEL(preset_val_label), 0.0);
+            gtk_grid_attach(GTK_GRID(grid), l_pr, 0, 1, 1, 1);
+            gtk_grid_attach(GTK_GRID(grid), preset_val_label, 1, 1, 1, 1);
+
+            // Row 2: Backend
             GtkWidget* l_bk = gtk_label_new("Backend:");
             gtk_label_set_xalign(GTK_LABEL(l_bk), 0.0);
             backend_val_label = gtk_label_new("PipeWire");
             gtk_label_set_xalign(GTK_LABEL(backend_val_label), 0.0);
-            gtk_grid_attach(GTK_GRID(grid), l_bk, 0, 1, 1, 1);
-            gtk_grid_attach(GTK_GRID(grid), backend_val_label, 1, 1, 1, 1);
+            gtk_grid_attach(GTK_GRID(grid), l_bk, 0, 2, 1, 1);
+            gtk_grid_attach(GTK_GRID(grid), backend_val_label, 1, 2, 1, 1);
 
-            // Row 2: Target Sink
+            // Row 3: Target Sink
             GtkWidget* l_tgt = gtk_label_new("Output:");
             gtk_label_set_xalign(GTK_LABEL(l_tgt), 0.0);
             target_val_label = gtk_label_new("(Auto)");
             gtk_label_set_xalign(GTK_LABEL(target_val_label), 0.0);
             gtk_label_set_ellipsize(GTK_LABEL(target_val_label), PANGO_ELLIPSIZE_MIDDLE);
-            gtk_grid_attach(GTK_GRID(grid), l_tgt, 0, 2, 1, 1);
-            gtk_grid_attach(GTK_GRID(grid), target_val_label, 1, 2, 1, 1);
+            gtk_grid_attach(GTK_GRID(grid), l_tgt, 0, 3, 1, 1);
+            gtk_grid_attach(GTK_GRID(grid), target_val_label, 1, 3, 1, 1);
 
-            // Row 3: Latency
+            // Row 4: Latency
             GtkWidget* l_lat = gtk_label_new("Latency:");
             gtk_label_set_xalign(GTK_LABEL(l_lat), 0.0);
             latency_val_label = gtk_label_new("256 frames (5.3 ms)");
             gtk_label_set_xalign(GTK_LABEL(latency_val_label), 0.0);
-            gtk_grid_attach(GTK_GRID(grid), l_lat, 0, 3, 1, 1);
-            gtk_grid_attach(GTK_GRID(grid), latency_val_label, 1, 3, 1, 1);
+            gtk_grid_attach(GTK_GRID(grid), l_lat, 0, 4, 1, 1);
+            gtk_grid_attach(GTK_GRID(grid), latency_val_label, 1, 4, 1, 1);
 
             gtk_container_add(GTK_CONTAINER(frame), grid);
             gtk_box_pack_start(GTK_BOX(controls_box), frame, FALSE, FALSE, 4);

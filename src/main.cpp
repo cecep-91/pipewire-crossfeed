@@ -4,6 +4,7 @@
 #include "audio_backend.hpp"
 #include "benchmark.hpp"
 #include "gui.hpp"
+#include "presets.hpp"
 #include <iostream>
 #include <csignal>
 #include <unistd.h>
@@ -72,6 +73,8 @@ static void print_help(const char* prog) {
               << "  toggle            Toggle crossfeed filtering on/off (bypass)\n"
               << "  on                Enable crossfeed filtering\n"
               << "  off               Bypass crossfeed filtering (direct passthrough)\n"
+              << "  presets           List available psychoacoustic presets\n"
+              << "  preset <name>     Apply a psychoacoustic preset (e.g. meier, chumoy, bs2b, linkwitz, studio)\n"
               << "  set               Adjust filter parameters live\n"
               << "  bench             Run DSP throughput and CPU performance benchmark\n"
               << "  help, --help      Show this help message\n"
@@ -79,7 +82,7 @@ static void print_help(const char* prog) {
               << "Run Options:\n"
               << "  --backend <name>  Audio backend: 'auto' (default), 'pulse', 'alsa'\n"
               << "  --target <sink>   Target output sink (default: auto non-crossfeed sink)\n"
-              << "  --level <dB>      Crossfeed blend level in dB (-30.0 to -6.0, default: -10.0)\n"
+              << "  --level <dB>      Crossfeed blend level in dB (-30.0 to -3.0, default: -10.0)\n"
               << "  --freq <Hz>       Crossover frequency in Hz (200 to 2000, default: 700)\n"
               << "  --delay <us>      Acoustic delay in microseconds (0 to 800, default: 280)\n"
               << "  --phase <Hz>      Phase alignment all-pass frequency (200 to 4000, default: 1500)\n"
@@ -369,6 +372,7 @@ static int cmd_status(bool json_output) {
     std::string trm = get_field("center_trim_db");
     std::string shd = get_field("shadow_hz");
     std::string adv = get_field("advanced_effects");
+    std::string prs = get_field("preset");
     std::string bk = get_field("backend");
     std::string tgt = get_field("target");
     std::string sr = get_field("sample_rate");
@@ -376,6 +380,7 @@ static int cmd_status(bool json_output) {
 
     std::cout << "  State:          " << (st == "running" ? "● Running" : "○ Stopped") << "\n"
               << "  Filter:         " << (en == "true" ? "ON (Processing active)" : "OFF (Bypassed)") << "\n"
+              << "  Preset:         " << (prs.empty() ? "Custom" : prs) << "\n"
               << "  Mode:           " << (adv == "false" ? "Pure Crossfeed (Basic blend only)" : "All Effects (ITD, APF, Shadow, Trim)") << "\n"
               << "  Blend Level:    " << lvl << " dB\n"
               << "  Crossover:      " << frq << " Hz\n"
@@ -508,6 +513,59 @@ static int cmd_set(int argc, char** argv) {
     return cmd_status(false);
 }
 
+static int cmd_presets() {
+    std::cout << "=================================================================\n"
+              << "             Crossfeed Acoustic Emulation Presets                \n"
+              << "=================================================================\n\n";
+    for (const auto& p : g_presets) {
+        std::cout << "  " << std::left << std::setw(10) << p.id
+                  << " " << p.name << "\n"
+                  << "             " << p.description << "\n"
+                  << "             Blend: " << std::fixed << std::setprecision(1) << p.level_db << " dB | "
+                  << "Cutoff: " << std::setprecision(0) << p.freq_hz << " Hz | "
+                  << "Delay: " << p.delay_us << " µs | "
+                  << "APF: " << p.phase_apf_hz << " Hz\n\n";
+    }
+    std::cout << "Usage:\n"
+              << "  crossfeed preset <name>    Apply preset live or save to configuration\n"
+              << "=================================================================\n";
+    return 0;
+}
+
+static int cmd_preset(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Error: Preset name required.\n\n";
+        cmd_presets();
+        return 1;
+    }
+    std::string name = argv[2];
+    const auto* p = find_preset(name);
+    if (!p) {
+        std::cerr << "Error: Unknown preset '" << name << "'.\n\n";
+        cmd_presets();
+        return 1;
+    }
+
+    std::string resp;
+    if (IpcClient::send_command(Config::get_socket_path(), "PRESET " + std::string(p->id), resp)) {
+        std::cout << "Applied preset '" << p->name << "' successfully.\n";
+        return cmd_status(false);
+    } else {
+        ConfigState cfg;
+        Config::load_state(cfg);
+        cfg.level_db = p->level_db;
+        cfg.freq_hz = p->freq_hz;
+        cfg.delay_us = p->delay_us;
+        cfg.phase_apf_hz = p->phase_apf_hz;
+        cfg.center_trim_db = p->center_trim_db;
+        cfg.shadow_hz = p->shadow_hz;
+        cfg.advanced_effects = true;
+        Config::save_state(cfg);
+        std::cout << "Engine is stopped. Saved preset '" << p->name << "' to configuration.\n";
+        return 0;
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         return run_gui(argc, argv);
@@ -535,6 +593,10 @@ int main(int argc, char** argv) {
         return cmd_set_enabled(true);
     } else if (cmd == "off") {
         return cmd_set_enabled(false);
+    } else if (cmd == "presets") {
+        return cmd_presets();
+    } else if (cmd == "preset") {
+        return cmd_preset(argc, argv);
     } else if (cmd == "set") {
         return cmd_set(argc, argv);
     } else if (cmd == "bench") {

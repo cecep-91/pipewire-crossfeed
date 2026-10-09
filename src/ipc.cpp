@@ -1,4 +1,5 @@
 #include "ipc.hpp"
+#include "presets.hpp"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
@@ -108,10 +109,21 @@ void IpcServer::run_loop() {
 }
 
 static std::string build_status_json(CrossfeedDSP* dsp, AudioBackend* backend) {
+    const auto* p = detect_active_preset(
+        dsp->get_level_db(),
+        dsp->get_freq_hz(),
+        dsp->get_delay_us(),
+        dsp->get_phase_apf_hz(),
+        dsp->get_center_trim_db(),
+        dsp->get_shadow_hz(),
+        dsp->get_advanced_effects()
+    );
+
     std::ostringstream ss;
     ss << "{\n"
        << "  \"status\": \"" << (backend && backend->is_running() ? "running" : "stopped") << "\",\n"
        << "  \"enabled\": " << (dsp->is_enabled() ? "true" : "false") << ",\n"
+       << "  \"preset\": \"" << (p ? p->name : "Custom") << "\",\n"
        << std::fixed << std::setprecision(1)
        << "  \"level_db\": " << dsp->get_level_db() << ",\n"
        << std::setprecision(0)
@@ -152,6 +164,32 @@ std::string IpcServer::handle_command(const std::string& cmd) {
         config_->enabled = false;
         Config::save_state(*config_);
         return build_status_json(dsp_, backend_);
+    } else if (cmd.rfind("PRESET ", 0) == 0) {
+        std::string p_name = cmd.substr(7);
+        while (!p_name.empty() && (p_name.front() == ' ' || p_name.front() == '\t')) p_name.erase(p_name.begin());
+        while (!p_name.empty() && (p_name.back() == ' ' || p_name.back() == '\t' || p_name.back() == '\r' || p_name.back() == '\n')) p_name.pop_back();
+        const auto* p = find_preset(p_name);
+        if (p) {
+            dsp_->set_level_db(p->level_db);
+            dsp_->set_freq_hz(p->freq_hz);
+            dsp_->set_delay_us(p->delay_us);
+            dsp_->set_phase_apf_hz(p->phase_apf_hz);
+            dsp_->set_center_trim_db(p->center_trim_db);
+            dsp_->set_shadow_hz(p->shadow_hz);
+            dsp_->set_advanced_effects(true);
+
+            config_->level_db = p->level_db;
+            config_->freq_hz = p->freq_hz;
+            config_->delay_us = p->delay_us;
+            config_->phase_apf_hz = p->phase_apf_hz;
+            config_->center_trim_db = p->center_trim_db;
+            config_->shadow_hz = p->shadow_hz;
+            config_->advanced_effects = true;
+            Config::save_state(*config_);
+            return build_status_json(dsp_, backend_);
+        } else {
+            return "{\"error\": \"unknown_preset\"}";
+        }
     } else if (cmd.rfind("SET ", 0) == 0) {
         std::istringstream iss(cmd.substr(4));
         std::string token;
