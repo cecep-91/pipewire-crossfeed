@@ -21,6 +21,50 @@ bool is_valid_port_name(const std::string& name) {
     return true;
 }
 
+static inline void run_sys_cmd(const std::string& cmd) {
+    int res = system(cmd.c_str());
+    (void)res;
+}
+
+static std::string find_best_physical_sink() {
+    FILE* fp = popen("pw-link -i 2>/dev/null | grep playback_FL | cut -d: -f1", "r");
+    if (!fp) return "";
+    char buf[256] = {0};
+    std::string fallback_sink;
+    std::string preferred_sink;
+
+    while (fgets(buf, sizeof(buf), fp)) {
+        std::string s(buf);
+        while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
+        if (s.empty() || !is_valid_port_name(s)) continue;
+        if (s == "crossfeed" || s == "crossfeed_sink" || s == "Crossfeed") continue;
+
+        if (fallback_sink.empty()) {
+            fallback_sink = s;
+        }
+
+        std::string lower = s;
+        for (char& c : lower) c = std::tolower(static_cast<unsigned char>(c));
+
+        // Prefer headphone, speaker, analog, and non-HDMI outputs
+        if (lower.find("hdmi") == std::string::npos) {
+            if (lower.find("headphone") != std::string::npos ||
+                lower.find("speaker") != std::string::npos ||
+                lower.find("analog") != std::string::npos) {
+                pclose(fp);
+                return s; // Ideal match found
+            }
+            if (preferred_sink.empty()) {
+                preferred_sink = s;
+            }
+        }
+    }
+    pclose(fp);
+
+    if (!preferred_sink.empty()) return preferred_sink;
+    return fallback_sink;
+}
+
 bool PipeWireBackend::safe_pw_link(const std::string& src, const std::string& dst, bool disconnect) {
     if (!is_valid_port_name(src) || !is_valid_port_name(dst)) {
         return false;
@@ -69,27 +113,25 @@ std::string PipeWireBackend::resolve_default_sink() {
             pclose(fp);
             std::string s(buf);
             while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
-            if (!s.empty() && is_valid_port_name(s) && !is_self(s)) return s;
+            if (!s.empty() && is_valid_port_name(s)) {
+                if (is_self(s)) {
+                    // Default sink is currently crossfeed itself, so no device change occurred.
+                    if (!active_target_sink_.empty()) {
+                        return active_target_sink_;
+                    }
+                    return find_best_physical_sink();
+                }
+                return s;
+            }
         } else {
             pclose(fp);
         }
     }
 
-    // Fallback: first non-crossfeed sink in pw-link -i
-    fp = popen("pw-link -i 2>/dev/null | grep playback_FL | cut -d: -f1", "r");
-    if (fp) {
-        char buf[256] = {0};
-        while (fgets(buf, sizeof(buf), fp)) {
-            std::string s(buf);
-            while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
-            if (!s.empty() && is_valid_port_name(s) && !is_self(s)) {
-                pclose(fp);
-                return s;
-            }
-        }
-        pclose(fp);
+    if (!active_target_sink_.empty()) {
+        return active_target_sink_;
     }
-    return "";
+    return find_best_physical_sink();
 }
 
 bool PipeWireBackend::load_null_sink() {
@@ -128,30 +170,38 @@ bool PipeWireBackend::load_null_sink() {
     }
 
     // 3. Move active sink inputs to crossfeed so ongoing audio immediately routes through filter
-    system("pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; done");
+    run_sys_cmd("pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; done");
 
     // 4. Set crossfeed as default sink
-    system("pactl set-default-sink crossfeed 2>/dev/null");
+    run_sys_cmd("pactl set-default-sink crossfeed 2>/dev/null");
     return true;
 }
 
 void PipeWireBackend::unload_null_sink() {
     // 1. Restore original default sink and move active streams back
-    if (!original_default_sink_.empty()) {
-        std::string move_cmd = "pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" \"" + original_default_sink_ + "\" 2>/dev/null; done";
-        system(move_cmd.c_str());
-        std::string def_cmd = "pactl set-default-sink \"" + original_default_sink_ + "\" 2>/dev/null";
-        system(def_cmd.c_str());
+    std::string restore_sink = original_default_sink_;
+    if (restore_sink.empty() || restore_sink == "crossfeed" || restore_sink == "Crossfeed") {
+        restore_sink = active_target_sink_;
+    }
+    if (restore_sink.empty() || restore_sink == "crossfeed" || restore_sink == "Crossfeed") {
+        restore_sink = find_best_physical_sink();
+    }
+
+    if (!restore_sink.empty() && restore_sink != "crossfeed" && restore_sink != "Crossfeed") {
+        std::string move_cmd = "pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" \"" + restore_sink + "\" 2>/dev/null; done";
+        run_sys_cmd(move_cmd);
+        std::string def_cmd = "pactl set-default-sink \"" + restore_sink + "\" 2>/dev/null";
+        run_sys_cmd(def_cmd);
     }
 
     // 2. Unload module
     if (null_sink_module_index_ != 0xFFFFFFFFU) {
         std::string cmd = "pactl unload-module " + std::to_string(null_sink_module_index_) + " >/dev/null 2>&1";
-        system(cmd.c_str());
+        run_sys_cmd(cmd);
         null_sink_module_index_ = 0xFFFFFFFFU;
         own_module_ = false;
     } else {
-        system("pactl list short modules 2>/dev/null | grep module-null-sink | grep 'sink_name=crossfeed' | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl unload-module \"$id\" 2>/dev/null; done");
+        run_sys_cmd("pactl list short modules 2>/dev/null | grep module-null-sink | grep 'sink_name=crossfeed' | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl unload-module \"$id\" 2>/dev/null; done");
     }
 }
 
@@ -219,6 +269,8 @@ bool PipeWireBackend::init(CrossfeedDSP* dsp, const std::string& target_sink, ui
         PW_KEY_MEDIA_ROLE, "DSP",
         PW_KEY_NODE_NAME, "crossfeed-dsp",
         PW_KEY_NODE_DESCRIPTION, "Crossfeed DSP Filter",
+        PW_KEY_NODE_PASSIVE, "true",
+        PW_KEY_NODE_AUTOCONNECT, "false",
         NULL
     );
 
@@ -241,6 +293,7 @@ bool PipeWireBackend::init(CrossfeedDSP* dsp, const std::string& target_sink, ui
             PW_KEY_FORMAT_DSP, "32 bit float mono audio",
             PW_KEY_PORT_NAME, "in_FL",
             PW_KEY_AUDIO_CHANNEL, "FL",
+            PW_KEY_PORT_PASSIVE, "true",
             NULL),
         NULL, 0
     );
@@ -250,6 +303,7 @@ bool PipeWireBackend::init(CrossfeedDSP* dsp, const std::string& target_sink, ui
             PW_KEY_FORMAT_DSP, "32 bit float mono audio",
             PW_KEY_PORT_NAME, "in_FR",
             PW_KEY_AUDIO_CHANNEL, "FR",
+            PW_KEY_PORT_PASSIVE, "true",
             NULL),
         NULL, 0
     );
@@ -260,6 +314,7 @@ bool PipeWireBackend::init(CrossfeedDSP* dsp, const std::string& target_sink, ui
             PW_KEY_FORMAT_DSP, "32 bit float mono audio",
             PW_KEY_PORT_NAME, "out_FL",
             PW_KEY_AUDIO_CHANNEL, "FL",
+            PW_KEY_PORT_PASSIVE, "true",
             NULL),
         NULL, 0
     );
@@ -269,6 +324,7 @@ bool PipeWireBackend::init(CrossfeedDSP* dsp, const std::string& target_sink, ui
             PW_KEY_FORMAT_DSP, "32 bit float mono audio",
             PW_KEY_PORT_NAME, "out_FR",
             PW_KEY_AUDIO_CHANNEL, "FR",
+            PW_KEY_PORT_PASSIVE, "true",
             NULL),
         NULL, 0
     );
@@ -342,6 +398,9 @@ void PipeWireBackend::link_manager_loop() {
 
                 safe_pw_link("crossfeed-dsp:out_FL", target_playback_fl_);
                 safe_pw_link("crossfeed-dsp:out_FR", target_playback_fr_);
+
+                // Re-assert crossfeed as default sink so subsequent new streams go to crossfeed
+                run_sys_cmd("pactl set-default-sink crossfeed 2>/dev/null");
             }
         }
 
@@ -382,11 +441,19 @@ void PipeWireBackend::link_manager_loop() {
         }
 
         // 1. Maintain input bridge: crossfeed:monitor -> crossfeed-dsp:in
+        // Ensure ONLY crossfeed:monitor is connected to crossfeed-dsp:in.
+        // If rogue streams connected directly to crossfeed-dsp:in, redirect them to crossfeed virtual sink.
         bool in_fl_linked = false;
         auto in_fl_it = graph.find("crossfeed-dsp:in_FL");
         if (in_fl_it != graph.end()) {
             for (const auto& src : in_fl_it->second.inputs) {
-                if (src == "crossfeed:monitor_FL") { in_fl_linked = true; break; }
+                if (src == "crossfeed:monitor_FL") {
+                    in_fl_linked = true;
+                } else {
+                    // Rogue stream bypassing virtual mixer directly into DSP port!
+                    safe_pw_link(src, "crossfeed-dsp:in_FL", true);
+                    safe_pw_link(src, "crossfeed:playback_FL");
+                }
             }
         }
         if (!in_fl_linked) {
@@ -397,7 +464,12 @@ void PipeWireBackend::link_manager_loop() {
         auto in_fr_it = graph.find("crossfeed-dsp:in_FR");
         if (in_fr_it != graph.end()) {
             for (const auto& src : in_fr_it->second.inputs) {
-                if (src == "crossfeed:monitor_FR") { in_fr_linked = true; break; }
+                if (src == "crossfeed:monitor_FR") {
+                    in_fr_linked = true;
+                } else {
+                    safe_pw_link(src, "crossfeed-dsp:in_FR", true);
+                    safe_pw_link(src, "crossfeed:playback_FR");
+                }
             }
         }
         if (!in_fr_linked) {

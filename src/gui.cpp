@@ -12,6 +12,12 @@
 #include <unistd.h>
 #include <limits.h>
 
+#if !GLIB_CHECK_VERSION(2, 74, 0)
+#ifndef G_APPLICATION_DEFAULT_FLAGS
+#define G_APPLICATION_DEFAULT_FLAGS G_APPLICATION_FLAGS_NONE
+#endif
+#endif
+
 namespace crossfeed {
 
 struct CrossfeedPreset {

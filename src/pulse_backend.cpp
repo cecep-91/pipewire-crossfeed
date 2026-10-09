@@ -7,6 +7,11 @@
 
 namespace crossfeed {
 
+static inline void run_sys_cmd(const std::string& cmd) {
+    int res = system(cmd.c_str());
+    (void)res;
+}
+
 PulseBackend::PulseBackend() = default;
 
 PulseBackend::~PulseBackend() {
@@ -158,29 +163,37 @@ bool PulseBackend::load_null_sink() {
     }
 
     // 3. Move active sink inputs to crossfeed
-    system("pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; done");
+    run_sys_cmd("pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" crossfeed 2>/dev/null; done");
 
     // 4. Set crossfeed as default sink
-    system("pactl set-default-sink crossfeed 2>/dev/null");
+    run_sys_cmd("pactl set-default-sink crossfeed 2>/dev/null");
     return true;
 }
 
 void PulseBackend::unload_null_sink() {
-    if (!original_default_sink_.empty()) {
-        std::string move_cmd = "pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" \"" + original_default_sink_ + "\" 2>/dev/null; done";
-        system(move_cmd.c_str());
-        std::string def_cmd = "pactl set-default-sink \"" + original_default_sink_ + "\" 2>/dev/null";
-        system(def_cmd.c_str());
+    auto is_self = [](const std::string& name) {
+        return name == "crossfeed" || name == "crossfeed_sink" || name == "Crossfeed";
+    };
+
+    std::string restore_sink = original_default_sink_;
+    if (restore_sink.empty() || is_self(restore_sink)) {
+        restore_sink = active_target_;
+    }
+    if (!restore_sink.empty() && !is_self(restore_sink)) {
+        std::string move_cmd = "pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl move-sink-input \"$id\" \"" + restore_sink + "\" 2>/dev/null; done";
+        run_sys_cmd(move_cmd);
+        std::string def_cmd = "pactl set-default-sink \"" + restore_sink + "\" 2>/dev/null";
+        run_sys_cmd(def_cmd);
     }
 
     if (null_sink_module_index_ != PA_INVALID_INDEX) {
         std::string cmd = "pactl unload-module " + std::to_string(null_sink_module_index_) + " >/dev/null 2>&1";
-        system(cmd.c_str());
+        run_sys_cmd(cmd);
         null_sink_module_index_ = PA_INVALID_INDEX;
         own_module_ = false;
     } else {
         // Fallback: unload any crossfeed null sink
-        system("pactl list short modules 2>/dev/null | grep module-null-sink | grep 'sink_name=crossfeed' | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl unload-module \"$id\" 2>/dev/null; done");
+        run_sys_cmd("pactl list short modules 2>/dev/null | grep module-null-sink | grep 'sink_name=crossfeed' | awk '{print $1}' | while read -r id; do [ -n \"$id\" ] && pactl unload-module \"$id\" 2>/dev/null; done");
     }
 }
 
@@ -205,13 +218,28 @@ std::string PulseBackend::resolve_target_sink(const std::string& requested, cons
     }
 
     // Otherwise, default sink IS self (user set Crossfeed as system default!)
-    // Select the first non-crossfeed sink from the system
+    // Select the best non-crossfeed physical sink from the system
+    std::string fallback;
     for (const auto& s : sinks) {
         if (!is_self(s.name)) {
-            std::cout << "[crossfeed] Default sink is Crossfeed. Routing playback to physical sink: "
-                      << s.name << " (" << s.description << ")" << std::endl;
-            return s.name;
+            if (fallback.empty()) fallback = s.name;
+            std::string lower = s.name + " " + s.description;
+            for (char& c : lower) c = std::tolower(static_cast<unsigned char>(c));
+            if (lower.find("hdmi") == std::string::npos &&
+                (lower.find("headphone") != std::string::npos ||
+                 lower.find("speaker") != std::string::npos ||
+                 lower.find("analog") != std::string::npos)) {
+                std::cout << "[crossfeed] Default sink is Crossfeed. Routing playback to physical sink: "
+                          << s.name << " (" << s.description << ")" << std::endl;
+                return s.name;
+            }
         }
+    }
+
+    if (!fallback.empty()) {
+        std::cout << "[crossfeed] Default sink is Crossfeed. Routing playback to physical sink: "
+                  << fallback << std::endl;
+        return fallback;
     }
 
     return "";
