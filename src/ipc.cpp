@@ -98,7 +98,8 @@ void IpcServer::run_loop() {
                         cmd.pop_back();
                     }
                     std::string reply = handle_command(cmd) + "\n";
-                    write(client_fd, reply.data(), reply.size());
+                    ssize_t w = write(client_fd, reply.data(), reply.size());
+                    (void)w;
                 }
                 close(client_fd);
             }

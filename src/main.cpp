@@ -286,9 +286,9 @@ static int cmd_start(int argc, char** argv) {
 
     // Child process: redirect standard streams and run
     setsid();
-    freopen("/dev/null", "r", stdin);
-    freopen("/dev/null", "w", stdout);
-    freopen("/dev/null", "w", stderr);
+    (void)!freopen("/dev/null", "r", stdin);
+    (void)!freopen("/dev/null", "w", stdout);
+    (void)!freopen("/dev/null", "w", stderr);
 
     char* run_argv[argc + 1];
     run_argv[0] = argv[0];

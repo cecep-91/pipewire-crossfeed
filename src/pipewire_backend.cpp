@@ -8,6 +8,10 @@
 #include <map>
 #include <cctype>
 
+#ifndef PW_KEY_PORT_PASSIVE
+#define PW_KEY_PORT_PASSIVE "port.passive"
+#endif
+
 namespace crossfeed {
 
 bool is_valid_port_name(const std::string& name) {
